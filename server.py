@@ -16,14 +16,14 @@ basedir = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_FOLDER = os.path.join(basedir, 'uploads')
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'mot-cai-khoa-bi-mat-ma-ban-nen-thay-doi'
+app.config['SECRET_KEY'] = 'a-very-secret-and-strong-key-you-should-change'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
-socketio = SocketIO(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 online_users = {} # key: user_id, value: session_id
 
@@ -60,6 +60,10 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
+@app.route('/')
+def index():
+    return "Backend server for the application is running!"
+
 @app.route('/register', methods=['POST'])
 def register():
     try:
@@ -78,7 +82,6 @@ def register():
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': f'Lỗi nội bộ từ server: {e}'}), 500
-
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -105,7 +108,7 @@ def get_online_users():
             users_info.append({'id': user.id, 'username': user.username})
     return jsonify({'users': users_info})
 
-# ... (Các API khác giữ nguyên) ...
+# ... (Bạn có thể thêm lại các API quản lý file và admin ở đây nếu cần) ...
 
 # --- CÁC SỰ KIỆN SOCKET.IO CHO CHAT ---
 @socketio.on('connect')
@@ -146,4 +149,5 @@ app.cli.add_command(make_admin)
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+    # Khi chạy local, dùng lệnh này
     socketio.run(app, debug=True, port=5000)
