@@ -1,6 +1,6 @@
 # server.py
 
-# Sửa lỗi cho eventlet: Các dòng này PHẢI nằm ở trên cùng
+# Tối ưu cho eventlet: Các dòng này PHẢI nằm ở trên cùng
 import eventlet
 eventlet.monkey_patch()
 
@@ -18,14 +18,17 @@ from flask_socketio import SocketIO, emit
 
 # --- KHỞI TẠO VÀ CẤU HÌNH ---
 basedir = os.path.abspath(os.path.dirname(__file__))
-UPLOAD_FOLDER = os.path.join(basedir, 'uploads')
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'a-very-secret-and-strong-key-you-should-change'
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or \
-    'sqlite:///' + os.path.join(basedir, 'app.db')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///' + os.path.join(basedir, 'app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Render sử dụng một hệ thống file tạm thời, chúng ta cần một thư mục để lưu file uploads
+UPLOAD_FOLDER = os.path.join(basedir, 'uploads') 
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -50,11 +53,8 @@ class User(UserMixin, db.Model):
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
     files = db.relationship('File', backref='owner', lazy=True, cascade="all, delete-orphan")
 
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+    def set_password(self, password): self.password_hash = generate_password_hash(password)
+    def check_password(self, password): return check_password_hash(self.password_hash, password)
 
 class File(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -62,70 +62,111 @@ class File(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
 
 @login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
+def load_user(user_id): return User.query.get(int(user_id))
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
 @app.route('/')
-def index():
-    return "Backend server for the application is running!"
+def index(): return "Backend server is running!"
 
+# --- API Người dùng ---
 @app.route('/register', methods=['POST'])
 def register():
-    try:
-        data = request.get_json()
-        username, password = data.get('username'), data.get('password')
-        if not username or not password:
-            return jsonify({'message': 'Tên đăng nhập và mật khẩu là bắt buộc!'}), 400
-        if User.query.filter_by(username=username).first():
-            return jsonify({'message': 'Tên đăng nhập đã tồn tại!'}), 400
-        
-        new_user = User(username=username)
-        new_user.set_password(password)
-        db.session.add(new_user)
-        db.session.commit()
-        return jsonify({'message': 'Đăng ký người dùng thành công!'}), 201
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'message': f'Lỗi nội bộ từ server: {e}'}), 500
+    data = request.get_json()
+    if not data or 'username' not in data or 'password' not in data:
+        return jsonify({'message': 'Yêu cầu không hợp lệ.'}), 400
+    username, password = data.get('username'), data.get('password')
+    if User.query.filter_by(username=username).first():
+        return jsonify({'message': 'Tên đăng nhập đã tồn tại!'}), 400
+    new_user = User(username=username); new_user.set_password(password)
+    db.session.add(new_user); db.session.commit()
+    return jsonify({'message': 'Đăng ký người dùng thành công!'}), 201
 
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
+    if not data or 'username' not in data or 'password' not in data:
+        return jsonify({'message': 'Yêu cầu không hợp lệ.'}), 400
     username, password = data.get('username'), data.get('password')
     user = User.query.filter_by(username=username).first()
     if user and user.check_password(password):
         login_user(user)
-        return jsonify({
-            'message': 'Đăng nhập thành công!',
-            'user_id': user.id,
-            'username': user.username,
-            'is_admin': user.is_admin
-        })
+        return jsonify({'message': 'Đăng nhập thành công!', 'user_id': user.id, 'username': user.username, 'is_admin': user.is_admin})
     return jsonify({'message': 'Sai tên đăng nhập hoặc mật khẩu!'}), 401
 
 @app.route('/online-users', methods=['GET'])
 @login_required
 def get_online_users():
-    users_info = []
-    for user_id in online_users:
-        user = User.query.get(user_id)
-        if user:
-            users_info.append({'id': user.id, 'username': user.username})
+    users_info = [{'id': u.id, 'username': u.username} for u in User.query.all()]
     return jsonify({'users': users_info})
+
+# --- API Quản lý File ---
+@app.route('/files', methods=['GET'])
+@login_required
+def list_files():
+    files = File.query.filter_by(user_id=current_user.id).all()
+    return jsonify({'files': [file.filename for file in files]})
+
+@app.route('/upload', methods=['POST'])
+@login_required
+def upload_file():
+    if 'file' not in request.files: return jsonify({'message': 'Không tìm thấy file'}), 400
+    file = request.files['file']
+    if file.filename == '': return jsonify({'message': 'Chưa chọn file nào'}), 400
+    filename = secure_filename(file.filename)
+    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+    new_file = File(filename=filename, owner=current_user)
+    db.session.add(new_file); db.session.commit()
+    return jsonify({'message': 'Tải file lên thành công!'}), 201
+
+@app.route('/download/<filename>', methods=['GET'])
+@login_required
+def download_file(filename):
+    file_record = File.query.filter_by(filename=filename, user_id=current_user.id).first()
+    if not file_record: return jsonify({'message': 'File không tồn tại hoặc không có quyền'}), 404
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+
+@app.route('/delete/<filename>', methods=['DELETE'])
+@login_required
+def delete_file(filename):
+    file_record = File.query.filter_by(filename=filename, user_id=current_user.id).first()
+    if not file_record: return jsonify({'message': 'File không tồn tại hoặc không có quyền'}), 404
+    try:
+        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+        db.session.delete(file_record); db.session.commit()
+        return jsonify({'message': f"File '{filename}' đã được xóa"})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': f'Lỗi khi xóa file: {e}'}), 500
+
+# --- API cho Admin ---
+@app.route('/admin/users', methods=['GET'])
+@login_required
+@admin_required
+def get_all_users():
+    users = User.query.all()
+    user_list = [{'id': user.id, 'username': user.username, 'is_admin': user.is_admin} for user in users]
+    return jsonify({'users': user_list})
+
+@app.route('/admin/users/<int:user_id>', methods=['DELETE'])
+@login_required
+@admin_required
+def delete_user(user_id):
+    user_to_delete = User.query.get(user_id)
+    if not user_to_delete: return jsonify({'message': 'User not found'}), 404
+    if user_to_delete.is_admin: return jsonify({'message': 'Không thể xóa tài khoản admin'}), 403
+    db.session.delete(user_to_delete); db.session.commit()
+    return jsonify({'message': f'User {user_to_delete.username} đã bị xóa.'})
 
 # --- CÁC SỰ KIỆN SOCKET.IO CHO CHAT ---
 @socketio.on('connect')
 def handle_connect():
     if current_user.is_authenticated:
         online_users[current_user.id] = request.sid
-        emit('user_status_changed', {'users': get_online_users().json['users']}, broadcast=True)
 
 @socketio.on('disconnect')
 def handle_disconnect():
     if current_user.is_authenticated and current_user.id in online_users:
         del online_users[current_user.id]
-        emit('user_status_changed', {'users': get_online_users().json['users']}, broadcast=True)
 
 @socketio.on('private_message')
 def handle_private_message(data):
@@ -136,21 +177,18 @@ def handle_private_message(data):
         emit('message_from_server', {'sender': current_user.username, 'message': message}, room=recipient_sid)
         emit('message_from_server', {'sender': current_user.username, 'message': message}, room=request.sid)
 
-# --- LỆNH TÙY CHỈNH & KHỐI CHẠY CHÍNH ---
+# --- KHỐI LỆNH CHẠY & LỆNH TÙY CHỈNH ---
+with app.app_context():
+    db.create_all()
+
 @click.command('make-admin')
 @click.argument('username')
 @with_appcontext
 def make_admin(username):
     user = User.query.filter_by(username=username).first()
-    if user:
-        user.is_admin = True
-        db.session.commit()
-        print(f"User {username} is now an admin.")
-    else:
-        print(f"User {username} not found.")
+    if user: user.is_admin = True; db.session.commit(); print(f"User {username} is now an admin.")
+    else: print(f"User {username} not found.")
 app.cli.add_command(make_admin)
 
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
     socketio.run(app, debug=True, port=5000)
