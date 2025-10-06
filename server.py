@@ -1,6 +1,6 @@
 # server.py
 
-# Tối ưu cho eventlet: Các dòng này PHẢI nằm ở trên cùng
+# Sửa lỗi cho eventlet: Các dòng này PHẢI nằm ở trên cùng
 import eventlet
 eventlet.monkey_patch()
 
@@ -23,12 +23,11 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///' + os.path.join(basedir, 'app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-# Render sử dụng một hệ thống file tạm thời, chúng ta cần một thư mục để lưu file uploads
-UPLOAD_FOLDER = os.path.join(basedir, 'uploads') 
+
+UPLOAD_FOLDER = os.path.join(basedir, 'uploads')
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -71,21 +70,20 @@ def index(): return "Backend server is running!"
 # --- API Người dùng ---
 @app.route('/register', methods=['POST'])
 def register():
-    data = request.get_json()
-    if not data or 'username' not in data or 'password' not in data:
-        return jsonify({'message': 'Yêu cầu không hợp lệ.'}), 400
+    # ... (code giữ nguyên từ phiên bản đầy đủ trước) ...
+    data = request.get_json();
+    if not data or 'username' not in data or 'password' not in data: return jsonify({'message': 'Yêu cầu không hợp lệ.'}), 400
     username, password = data.get('username'), data.get('password')
-    if User.query.filter_by(username=username).first():
-        return jsonify({'message': 'Tên đăng nhập đã tồn tại!'}), 400
+    if User.query.filter_by(username=username).first(): return jsonify({'message': 'Tên đăng nhập đã tồn tại!'}), 400
     new_user = User(username=username); new_user.set_password(password)
     db.session.add(new_user); db.session.commit()
     return jsonify({'message': 'Đăng ký người dùng thành công!'}), 201
 
 @app.route('/login', methods=['POST'])
 def login():
+    # ... (code giữ nguyên từ phiên bản đầy đủ trước) ...
     data = request.get_json()
-    if not data or 'username' not in data or 'password' not in data:
-        return jsonify({'message': 'Yêu cầu không hợp lệ.'}), 400
+    if not data or 'username' not in data or 'password' not in data: return jsonify({'message': 'Yêu cầu không hợp lệ.'}), 400
     username, password = data.get('username'), data.get('password')
     user = User.query.filter_by(username=username).first()
     if user and user.check_password(password):
@@ -114,8 +112,7 @@ def upload_file():
     if file.filename == '': return jsonify({'message': 'Chưa chọn file nào'}), 400
     filename = secure_filename(file.filename)
     file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-    new_file = File(filename=filename, owner=current_user)
-    db.session.add(new_file); db.session.commit()
+    new_file = File(filename=filename, owner=current_user); db.session.add(new_file); db.session.commit()
     return jsonify({'message': 'Tải file lên thành công!'}), 201
 
 @app.route('/download/<filename>', methods=['GET'])
@@ -135,8 +132,7 @@ def delete_file(filename):
         db.session.delete(file_record); db.session.commit()
         return jsonify({'message': f"File '{filename}' đã được xóa"})
     except Exception as e:
-        db.session.rollback()
-        return jsonify({'message': f'Lỗi khi xóa file: {e}'}), 500
+        db.session.rollback(); return jsonify({'message': f'Lỗi khi xóa file: {e}'}), 500
 
 # --- API cho Admin ---
 @app.route('/admin/users', methods=['GET'])
@@ -170,8 +166,7 @@ def handle_disconnect():
 
 @socketio.on('private_message')
 def handle_private_message(data):
-    recipient_id = data['recipient_id']
-    message = data['message']
+    recipient_id = data['recipient_id']; message = data['message']
     recipient_sid = online_users.get(recipient_id)
     if recipient_sid:
         emit('message_from_server', {'sender': current_user.username, 'message': message}, room=recipient_sid)
