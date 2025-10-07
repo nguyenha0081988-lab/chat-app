@@ -5,3 +5,4 @@ Flask-SocketIO
 werkzeug
 eventlet
 gunicorn
+psycopg2-binary
