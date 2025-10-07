@@ -7,3 +7,4 @@ eventlet
 gunicorn
 psycopg2-binary
 cloudinary
+Pillow
