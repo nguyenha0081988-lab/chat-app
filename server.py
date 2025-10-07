@@ -23,6 +23,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlit
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app); login_manager = LoginManager(app); socketio = SocketIO(app, cors_allowed_origins="*")
 online_users = {}
+
 cloudinary.config(cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'), api_key=os.environ.get('CLOUDINARY_API_KEY'), api_secret=os.environ.get('CLOUDINARY_API_SECRET'))
 
 # --- DECORATOR, MODELS, USER_LOADER ---
@@ -43,12 +44,9 @@ class File(db.Model):
     id = db.Column(db.Integer, primary_key=True); filename = db.Column(db.String(255), nullable=False); public_id = db.Column(db.String(255), nullable=False, unique=True); user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True); content = db.Column(db.Text, nullable=False); timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    sender_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False); recipient_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     is_read = db.Column(db.Boolean, default=False, nullable=False)
-    # SỬA LỖI: Bổ sung lại các dòng relationship bị thiếu
-    sender = db.relationship('User', foreign_keys=[sender_id])
-    recipient = db.relationship('User', foreign_keys=[recipient_id])
+    sender = db.relationship('User', foreign_keys=[sender_id]); recipient = db.relationship('User', foreign_keys=[recipient_id])
 @login_manager.user_loader
 def load_user(user_id): return User.query.get(int(user_id))
 
@@ -63,7 +61,6 @@ def create_tables_and_admin():
                 db.session.add(default_admin); db.session.commit(); print(f"Default admin user '{admin_user}' created.")
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
-# ... (Toàn bộ các API và hàm Socket.IO giữ nguyên như cũ) ...
 @app.route('/')
 def index(): return "Backend server for the application is running!"
 @app.route('/login', methods=['POST'])
@@ -74,6 +71,11 @@ def login():
         login_user(user)
         return jsonify({'message': 'Đăng nhập thành công!', 'user_id': user.id, 'username': user.username, 'is_admin': user.is_admin, 'avatar_url': user.avatar_url})
     return jsonify({'message': 'Sai tên đăng nhập hoặc mật khẩu!'}), 401
+@app.route('/online-users', methods=['GET'])
+@login_required
+def get_online_users():
+    users_info = [{'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url} for u in User.query.all()]
+    return jsonify({'users': users_info})
 @app.route('/history/<int:partner_id>', methods=['GET'])
 @login_required
 def get_history(partner_id):
@@ -86,7 +88,10 @@ def get_history(partner_id):
     if partner_sid and message_ids_to_update:
         emit('messages_seen', {'ids': message_ids_to_update}, room=partner_sid)
     return jsonify(history)
-# ... (và các API khác)
+# ... (Toàn bộ các API khác giữ nguyên)
+
+# --- CÁC SỰ KIỆN SOCKET.IO ---
+# ... (Toàn bộ hàm Socket.IO giữ nguyên)
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
