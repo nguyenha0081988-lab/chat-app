@@ -1,15 +1,14 @@
 # server.py
 
-# Tối ưu cho eventlet: Các dòng này PHẢI nằm ở trên cùng
 import eventlet
 eventlet.monkey_patch()
 
-# Các thư viện khác
 import os
 import click
 from flask import Flask, request, jsonify, send_from_directory
 from flask.cli import with_appcontext
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import inspect
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
@@ -22,38 +21,82 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///' + os.path.join(basedir, 'app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-UPLOAD_FOLDER = os.path.join(basedir, 'uploads');
-if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
+UPLOAD_FOLDER = os.path.join(basedir, 'uploads')
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-db = SQLAlchemy(app); login_manager = LoginManager(app); socketio = SocketIO(app, cors_allowed_origins="*")
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
+
 online_users = {}
 
-# --- DECORATOR, MODELS, USER_LOADER ---
+# --- CÁC MODEL CƠ SỞ DỮ LIỆU ---
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128))
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
+    files = db.relationship('File', backref='owner', lazy=True, cascade="all, delete-orphan")
+    def set_password(self, password): self.password_hash = generate_password_hash(password)
+    def check_password(self, password): return check_password_hash(self.password_hash, password)
+
+class File(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+# MỚI: HÀM TỰ ĐỘNG TẠO CSDL
+@app.before_request
+def create_tables():
+    # Dùng app context để đảm bảo an toàn
+    with app.app_context():
+        # Kiểm tra xem bảng 'user' đã tồn tại chưa
+        inspector = inspect(db.engine)
+        if not inspector.has_table("user"):
+            db.create_all()
+            print("Initialized the database and created tables.")
+
+# --- DECORATOR VÀ USER LOADER ---
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not current_user.is_authenticated or not current_user.is_admin: return jsonify({'message': 'Yêu cầu quyền Admin!'}), 403
+        if not current_user.is_authenticated or not current_user.is_admin:
+            return jsonify({'message': 'Yêu cầu quyền Admin!'}), 403
         return f(*args, **kwargs)
     return decorated_function
-class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True); username = db.Column(db.String(80), unique=True, nullable=False); password_hash = db.Column(db.String(128)); is_admin = db.Column(db.Boolean, default=False, nullable=False); files = db.relationship('File', backref='owner', lazy=True, cascade="all, delete-orphan")
-    def set_password(self, password): self.password_hash = generate_password_hash(password)
-    def check_password(self, password): return check_password_hash(self.password_hash, password)
-class File(db.Model):
-    id = db.Column(db.Integer, primary_key=True); filename = db.Column(db.String(255), nullable=False); user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
 @login_manager.user_loader
 def load_user(user_id): return User.query.get(int(user_id))
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
 @app.route('/')
 def index(): return "Backend server for the application is running!"
+
 @app.route('/register', methods=['POST'])
 def register():
-    data = request.get_json(); username, password = data.get('username'), data.get('password')
+    data = request.get_json()
+    username, password = data.get('username'), data.get('password')
+    if not username or not password: return jsonify({'message': 'Yêu cầu không hợp lệ.'}), 400
     if User.query.filter_by(username=username).first(): return jsonify({'message': 'Tên đăng nhập đã tồn tại!'}), 400
-    new_user = User(username=username); new_user.set_password(password)
-    db.session.add(new_user); db.session.commit(); return jsonify({'message': 'Đăng ký người dùng thành công!'}), 201
+    
+    # SỬA ĐỔI: Tự động cấp quyền Admin cho người dùng đầu tiên
+    is_first_user = User.query.first() is None
+    
+    new_user = User(username=username)
+    new_user.set_password(password)
+    if is_first_user:
+        new_user.is_admin = True
+    
+    db.session.add(new_user); db.session.commit()
+    
+    message = "Đăng ký người dùng thành công!"
+    if is_first_user:
+        message += " Tài khoản của bạn đã được cấp quyền Admin."
+        
+    return jsonify({'message': message}), 201
+
+# ... (Toàn bộ các API khác: login, online-users, files, upload, download, delete, admin... đều giữ nguyên như cũ) ...
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json(); username, password = data.get('username'), data.get('password')
@@ -70,8 +113,7 @@ def get_online_users():
 @app.route('/files', methods=['GET'])
 @login_required
 def list_files():
-    files = File.query.all()
-    return jsonify({'files': [file.filename for file in files]})
+    files = File.query.all(); return jsonify({'files': [file.filename for file in files]})
 @app.route('/upload', methods=['POST'])
 @login_required
 def upload_file():
@@ -149,28 +191,6 @@ def handle_private_message(data):
         emit('message_from_server', {'sender': current_user.username, 'message': message}, room=recipient_sid)
         emit('message_from_server', {'sender': current_user.username, 'message': message}, room=request.sid)
 
-# --- KHỐI LỆNH CHẠY & LỆNH TÙY CHỈNH ---
-@click.command('init-db')
-@with_appcontext
-def init_db_command():
-    """Xóa dữ liệu cũ và tạo bảng mới."""
-    db.create_all()
-    print('Đã khởi tạo cơ sở dữ liệu.')
-
-app.cli.add_command(init_db_command)
-
-@click.command('make-admin')
-@click.argument('username')
-@with_appcontext
-def make_admin(username):
-    user = User.query.filter_by(username=username).first()
-    if user:
-        user.is_admin = True
-        db.session.commit()
-        print(f"User {username} is now an admin.")
-    else:
-        print(f"User {username} not found.")
-app.cli.add_command(make_admin)
-
+# --- KHỐI LỆNH CHẠY ---
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
