@@ -21,6 +21,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///' + os.path.join(basedir, 'app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
 db = SQLAlchemy(app); login_manager = LoginManager(app); socketio = SocketIO(app, cors_allowed_origins="*")
 online_users = {}
 
@@ -42,18 +43,26 @@ def admin_required(f):
 
 # --- CÁC MODEL CƠ SỞ DỮ LIỆU ---
 class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True); username = db.Column(db.String(80), unique=True, nullable=False); password_hash = db.Column(db.String(256)); is_admin = db.Column(db.Boolean, default=False, nullable=False)
-    files = db.relationship('File', backref='owner', lazy=True)
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(256))
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
+    avatar_url = db.Column(db.String(256), nullable=True)
+    files = db.relationship('File', backref='owner', lazy=True, cascade="all, delete-orphan")
+    sent_messages = db.relationship('Message', foreign_keys='Message.sender_id', backref='sender_user', lazy=True, cascade="all, delete-orphan")
+    received_messages = db.relationship('Message', foreign_keys='Message.recipient_id', backref='recipient_user', lazy=True, cascade="all, delete-orphan")
     def set_password(self, password): self.password_hash = generate_password_hash(password)
     def check_password(self, password): return check_password_hash(self.password_hash, password)
 class File(db.Model):
     id = db.Column(db.Integer, primary_key=True); filename = db.Column(db.String(255), nullable=False); public_id = db.Column(db.String(255), nullable=False, unique=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True); content = db.Column(db.Text, nullable=False); timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    sender_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
-    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     sender = db.relationship('User', foreign_keys=[sender_id]); recipient = db.relationship('User', foreign_keys=[recipient_id])
+@login_manager.user_loader
+def load_user(user_id): return User.query.get(int(user_id))
 
 @app.before_request
 def create_tables_and_admin():
@@ -65,24 +74,33 @@ def create_tables_and_admin():
             if admin_pass and User.query.filter_by(username=admin_user).first() is None:
                 default_admin = User(username=admin_user, is_admin=True); default_admin.set_password(admin_pass)
                 db.session.add(default_admin); db.session.commit(); print(f"Default admin user '{admin_user}' created.")
-@login_manager.user_loader
-def load_user(user_id): return User.query.get(int(user_id))
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
 @app.route('/')
-def index(): return "Backend server for the application is running!"
+def index(): return "Backend server is running!"
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json(); username, password = data.get('username'), data.get('password')
     user = User.query.filter_by(username=username).first()
     if user and user.check_password(password):
-        login_user(user); return jsonify({'message': 'Đăng nhập thành công!', 'user_id': user.id, 'username': user.username, 'is_admin': user.is_admin})
+        login_user(user)
+        return jsonify({'message': 'Đăng nhập thành công!', 'user_id': user.id, 'username': user.username, 'is_admin': user.is_admin, 'avatar_url': user.avatar_url})
     return jsonify({'message': 'Sai tên đăng nhập hoặc mật khẩu!'}), 401
 @app.route('/online-users', methods=['GET'])
 @login_required
 def get_online_users():
-    users_info = [{'id': u.id, 'username': u.username} for u in User.query.all()]
+    users_info = [{'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url} for u in User.query.all()]
     return jsonify({'users': users_info})
+@app.route('/avatar/upload', methods=['POST'])
+@login_required
+def upload_avatar():
+    if 'avatar' not in request.files: return jsonify({'message': 'Không tìm thấy file avatar'}), 400
+    file_to_upload = request.files['avatar']
+    try:
+        upload_result = cloudinary.uploader.upload(file_to_upload, public_id=f"avatars/{current_user.id}", overwrite=True, transformation=[{'width': 100, 'height': 100, 'gravity': "face", 'crop': "thumb"}, {'radius': "max"}])
+        avatar_url = upload_result.get('secure_url'); current_user.avatar_url = avatar_url; db.session.commit()
+        return jsonify({'message': 'Cập nhật avatar thành công!', 'avatar_url': avatar_url})
+    except Exception as e: return jsonify({'message': f'Lỗi khi tải avatar: {str(e)}'}), 500
 @app.route('/history/<int:partner_id>', methods=['GET'])
 @login_required
 def get_history(partner_id):
@@ -131,7 +149,8 @@ def delete_file(public_id):
 @login_required
 @admin_required
 def get_all_users():
-    users = User.query.all(); user_list = [{'id': u.id, 'username': u.username, 'is_admin': u.is_admin} for u in users]
+    users = User.query.all()
+    user_list = [{'id': u.id, 'username': u.username, 'is_admin': u.is_admin} for u in users]
     return jsonify({'users': user_list})
 @app.route('/admin/users', methods=['POST'])
 @login_required
@@ -141,7 +160,8 @@ def admin_add_user():
     if not username or not password: return jsonify({'message': 'Username and password are required'}), 400
     if User.query.filter_by(username=username).first(): return jsonify({'message': 'Username already exists'}), 400
     new_user = User(username=username, is_admin=data.get('is_admin', False)); new_user.set_password(password)
-    db.session.add(new_user); db.session.commit(); return jsonify({'message': f'User {username} created successfully'}), 201
+    db.session.add(new_user); db.session.commit()
+    return jsonify({'message': f'User {username} created successfully'}), 201
 @app.route('/admin/users/<int:user_id>', methods=['PUT'])
 @login_required
 @admin_required
@@ -160,7 +180,7 @@ def delete_user(user_id):
     user_to_delete = User.query.get_or_404(user_id)
     if user_to_delete.username == current_user.username: return jsonify({'message': 'Không thể tự xóa chính mình'}), 403
     db.session.delete(user_to_delete); db.session.commit()
-    return jsonify({'message': f'User {user_to_delete.username} đã bị xóa. Tin nhắn và file của họ được giữ lại.'})
+    return jsonify({'message': f'User {user_to_delete.username} đã bị xóa.'})
 
 # --- CÁC SỰ KIỆN SOCKET.IO ---
 @socketio.on('connect')
