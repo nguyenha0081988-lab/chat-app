@@ -1,10 +1,12 @@
 # server.py
 
+# Tối ưu cho eventlet: Các dòng này PHẢI nằm ở trên cùng
 import eventlet
 eventlet.monkey_patch()
 
-import os, click
-from datetime import datetime, timezone
+# Các thư viện khác
+import os
+import click
 from flask import Flask, request, jsonify, send_from_directory
 from flask.cli import with_appcontext
 from flask_sqlalchemy import SQLAlchemy
@@ -14,6 +16,7 @@ from werkzeug.utils import secure_filename
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from functools import wraps
 from flask_socketio import SocketIO, emit
+from datetime import datetime, timezone
 
 # --- KHỞI TẠO VÀ CẤU HÌNH ---
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -24,6 +27,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 UPLOAD_FOLDER = os.path.join(basedir, 'uploads');
 if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
 db = SQLAlchemy(app); login_manager = LoginManager(app); socketio = SocketIO(app, cors_allowed_origins="*")
 online_users = {}
 
@@ -39,19 +43,20 @@ def admin_required(f):
 # --- CÁC MODEL CƠ SỞ DỮ LIỆU ---
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True); username = db.Column(db.String(80), unique=True, nullable=False); password_hash = db.Column(db.String(256)); is_admin = db.Column(db.Boolean, default=False, nullable=False)
-    files = db.relationship('File', backref='owner', lazy=True, on_delete='SET NULL')
+    files = db.relationship('File', backref='owner', lazy=True, cascade="all, delete-orphan")
     sent_messages = db.relationship('Message', foreign_keys='Message.sender_id', backref='sender_user', lazy=True, cascade="all, delete-orphan")
     received_messages = db.relationship('Message', foreign_keys='Message.recipient_id', backref='recipient_user', lazy=True, cascade="all, delete-orphan")
     def set_password(self, password): self.password_hash = generate_password_hash(password)
     def check_password(self, password): return check_password_hash(self.password_hash, password)
 class File(db.Model):
-    id = db.Column(db.Integer, primary_key=True); filename = db.Column(db.String(255), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    id = db.Column(db.Integer, primary_key=True); filename = db.Column(db.String(255), nullable=False); user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True); content = db.Column(db.Text, nullable=False); timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    sender_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
-    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     sender = db.relationship('User', foreign_keys=[sender_id]); recipient = db.relationship('User', foreign_keys=[recipient_id])
+@login_manager.user_loader
+def load_user(user_id): return User.query.get(int(user_id))
 
 @app.before_request
 def create_tables_and_admin():
@@ -65,12 +70,11 @@ def create_tables_and_admin():
                 default_admin.set_password(admin_pass)
                 db.session.add(default_admin); db.session.commit()
                 print(f"Default admin user '{admin_user}' created.")
-@login_manager.user_loader
-def load_user(user_id): return User.query.get(int(user_id))
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
 @app.route('/')
-def index(): return "Backend server is running!"
+def index(): return "Backend server for the application is running!"
+
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json(); username, password = data.get('username'), data.get('password')
@@ -107,7 +111,7 @@ def upload_file():
     file = request.files['file']
     if file.filename == '': return jsonify({'message': 'Chưa chọn file nào'}), 400
     filename = secure_filename(file.filename); file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-    new_file = File(filename=filename, owner=current_user); db.session.add(new_file); db.session.commit()
+    new_user = File(filename=filename, owner=current_user); db.session.add(new_user); db.session.commit()
     return jsonify({'message': 'Tải file lên thành công!'}), 201
 @app.route('/download/<filename>', methods=['GET'])
 @login_required
@@ -160,7 +164,7 @@ def delete_user(user_id):
     user_to_delete = User.query.get_or_404(user_id)
     if user_to_delete.username == current_user.username: return jsonify({'message': 'Không thể tự xóa chính mình'}), 403
     db.session.delete(user_to_delete); db.session.commit()
-    return jsonify({'message': f'User {user_to_delete.username} đã bị xóa. Tin nhắn và file của họ được giữ lại.'})
+    return jsonify({'message': f'User {user_to_delete.username} đã bị xóa.'})
 
 # --- CÁC SỰ KIỆN SOCKET.IO ---
 @socketio.on('connect')
