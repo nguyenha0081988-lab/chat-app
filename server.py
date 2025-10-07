@@ -36,7 +36,7 @@ online_users = {}
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128))
+    password_hash = db.Column(db.String(256))
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
     files = db.relationship('File', backref='owner', lazy=True, cascade="all, delete-orphan")
     def set_password(self, password): self.password_hash = generate_password_hash(password)
@@ -194,3 +194,4 @@ def handle_private_message(data):
 # --- KHỐI LỆNH CHẠY ---
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
+
