@@ -27,13 +27,15 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 db = SQLAlchemy(app); login_manager = LoginManager(app); socketio = SocketIO(app, cors_allowed_origins="*")
 online_users = {}
 
-# --- DECORATOR, MODELS, USER_LOADER ---
+# --- DECORATOR KIỂM TRA ADMIN ---
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not current_user.is_authenticated or not current_user.is_admin: return jsonify({'message': 'Yêu cầu quyền Admin!'}), 403
         return f(*args, **kwargs)
     return decorated_function
+
+# --- CÁC MODEL CƠ SỞ DỮ LIỆU ---
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True); username = db.Column(db.String(80), unique=True, nullable=False); password_hash = db.Column(db.String(256)); is_admin = db.Column(db.Boolean, default=False, nullable=False)
     files = db.relationship('File', backref='owner', lazy=True, cascade="all, delete-orphan")
@@ -64,7 +66,7 @@ def create_tables_and_admin():
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
 @app.route('/')
-def index(): return "Backend server is running!"
+def index(): return "Backend server for the application is running!"
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json(); username, password = data.get('username'), data.get('password')
@@ -78,30 +80,91 @@ def login():
 def get_online_users():
     users_info = [{'id': u.id, 'username': u.username} for u in User.query.all()]
     return jsonify({'users': users_info})
-@app.route('/history/<int:partner_id>', methods=['GET'])
+@app.route('/history/<int:partner_id>')
 @login_required
 def get_history(partner_id):
     messages = db.session.query(Message).filter(or_((Message.sender_id == current_user.id) & (Message.recipient_id == partner_id), (Message.sender_id == partner_id) & (Message.recipient_id == current_user.id))).order_by(Message.timestamp.asc()).all()
     history = [{'sender': msg.sender.username if msg.sender else "Người dùng đã bị xóa", 'message': msg.content} for msg in messages]
     return jsonify(history)
-
-# MỚI: API ĐỂ XÓA LỊCH SỬ CHAT
 @app.route('/history/<int:partner_id>', methods=['DELETE'])
 @login_required
 def delete_history(partner_id):
-    messages_to_delete = db.session.query(Message).filter(
-        or_(
-            (Message.sender_id == current_user.id) & (Message.recipient_id == partner_id),
-            (Message.sender_id == partner_id) & (Message.recipient_id == current_user.id)
-        )
-    )
-    messages_to_delete.delete(synchronize_session=False)
-    db.session.commit()
+    messages_to_delete = db.session.query(Message).filter(or_((Message.sender_id == current_user.id) & (Message.recipient_id == partner_id),(Message.sender_id == partner_id) & (Message.recipient_id == current_user.id)))
+    messages_to_delete.delete(synchronize_session=False); db.session.commit()
     return jsonify({'message': 'Lịch sử trò chuyện đã được xóa.'})
-
-# ... (Các API Quản lý File và Admin giữ nguyên) ...
+@app.route('/files', methods=['GET'])
+@login_required
+def list_files():
+    files = File.query.all(); return jsonify({'files': [file.filename for file in files]})
+@app.route('/upload', methods=['POST'])
+@login_required
+def upload_file():
+    if 'file' not in request.files: return jsonify({'message': 'Không tìm thấy file'}), 400
+    file = request.files['file']
+    if file.filename == '': return jsonify({'message': 'Chưa chọn file nào'}), 400
+    filename = secure_filename(file.filename); file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+    new_file = File(filename=filename, owner=current_user); db.session.add(new_file); db.session.commit()
+    return jsonify({'message': 'Tải file lên thành công!'}), 201
+@app.route('/download/<filename>', methods=['GET'])
+@login_required
+def download_file(filename):
+    file_record = File.query.filter_by(filename=filename).first()
+    if not file_record: return jsonify({'message': 'File không tồn tại'}), 404
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+@app.route('/delete/<filename>', methods=['DELETE'])
+@login_required
+@admin_required
+def delete_file(filename):
+    file_record = File.query.filter_by(filename=filename).first()
+    if not file_record: return jsonify({'message': 'File không tồn tại'}), 404
+    try:
+        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename)); db.session.delete(file_record); db.session.commit()
+        return jsonify({'message': f"File '{filename}' đã được xóa"})
+    except Exception as e: db.session.rollback(); return jsonify({'message': f'Lỗi khi xóa file: {e}'}), 500
+@app.route('/admin/users', methods=['GET'])
+@login_required
+@admin_required
+def get_all_users():
+    users = User.query.all()
+    user_list = [{'id': u.id, 'username': u.username, 'is_admin': u.is_admin} for u in users]
+    return jsonify({'users': user_list})
+@app.route('/admin/users', methods=['POST'])
+@login_required
+@admin_required
+def admin_add_user():
+    data = request.get_json(); username, password = data.get('username'), data.get('password')
+    if not username or not password: return jsonify({'message': 'Username and password are required'}), 400
+    if User.query.filter_by(username=username).first(): return jsonify({'message': 'Username already exists'}), 400
+    new_user = User(username=username, is_admin=data.get('is_admin', False)); new_user.set_password(password)
+    db.session.add(new_user); db.session.commit()
+    return jsonify({'message': f'User {username} created successfully'}), 201
+@app.route('/admin/users/<int:user_id>', methods=['PUT'])
+@login_required
+@admin_required
+def admin_edit_user(user_id):
+    user = User.query.get_or_404(user_id); data = request.get_json()
+    if 'username' in data and data['username'] != user.username:
+        if User.query.filter_by(username=data['username']).first(): return jsonify({'message': 'Username already exists'}), 400
+        user.username = data['username']
+    if 'password' in data and data['password']: user.set_password(data['password'])
+    if 'is_admin' in data: user.is_admin = data['is_admin']
+    db.session.commit(); return jsonify({'message': f'User {user.username} updated successfully'})
+@app.route('/admin/users/<int:user_id>', methods=['DELETE'])
+@login_required
+@admin_required
+def delete_user(user_id):
+    user_to_delete = User.query.get_or_404(user_id)
+    if user_to_delete.username == current_user.username: return jsonify({'message': 'Không thể tự xóa chính mình'}), 403
+    db.session.delete(user_to_delete); db.session.commit()
+    return jsonify({'message': f'User {user_to_delete.username} đã bị xóa.'})
 
 # --- CÁC SỰ KIỆN SOCKET.IO ---
+@socketio.on('connect')
+def handle_connect():
+    if current_user.is_authenticated: online_users[current_user.id] = request.sid
+@socketio.on('disconnect')
+def handle_disconnect():
+    if current_user.is_authenticated and current_user.id in online_users: del online_users[current_user.id]
 @socketio.on('private_message')
 def handle_private_message(data):
     recipient_id = data['recipient_id']; message = data['message']
@@ -111,6 +174,5 @@ def handle_private_message(data):
     if recipient_sid: emit('message_from_server', {'sender': current_user.username, 'message': message}, room=recipient_sid)
     emit('message_from_server', {'sender': current_user.username, 'message': message}, room=request.sid)
 
-# ... (Các hàm và phần còn lại giữ nguyên) ...
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
