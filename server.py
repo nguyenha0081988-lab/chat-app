@@ -40,23 +40,36 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# --- CÁC MODEL CƠ SỞ DỮ LIỆU ---
+# --- CÁC MODEL CƠ SỞ DỮ LIỆU (ĐÃ SỬA LỖI) ---
 class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True); username = db.Column(db.String(80), unique=True, nullable=False); password_hash = db.Column(db.String(256)); is_admin = db.Column(db.Boolean, default=False, nullable=False)
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(256))
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
+    # SỬA LỖI: Bỏ 'on_delete' khỏi relationship, chỉ giữ lại cascade
     files = db.relationship('File', backref='owner', lazy=True, cascade="all, delete-orphan")
     sent_messages = db.relationship('Message', foreign_keys='Message.sender_id', backref='sender_user', lazy=True, cascade="all, delete-orphan")
     received_messages = db.relationship('Message', foreign_keys='Message.recipient_id', backref='recipient_user', lazy=True, cascade="all, delete-orphan")
+    
     def set_password(self, password): self.password_hash = generate_password_hash(password)
     def check_password(self, password): return check_password_hash(self.password_hash, password)
+
 class File(db.Model):
-    id = db.Column(db.Integer, primary_key=True); filename = db.Column(db.String(255), nullable=False); user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), nullable=False)
+    # SỬA LỖI: Tham số ondelete phải nằm ở ForeignKey
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+
 class Message(db.Model):
-    id = db.Column(db.Integer, primary_key=True); content = db.Column(db.Text, nullable=False); timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    # SỬA LỖI: Tham số ondelete phải nằm ở ForeignKey
     sender_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     recipient_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    sender = db.relationship('User', foreign_keys=[sender_id]); recipient = db.relationship('User', foreign_keys=[recipient_id])
-@login_manager.user_loader
-def load_user(user_id): return User.query.get(int(user_id))
+
+    sender = db.relationship('User', foreign_keys=[sender_id])
+    recipient = db.relationship('User', foreign_keys=[recipient_id])
 
 @app.before_request
 def create_tables_and_admin():
@@ -70,10 +83,12 @@ def create_tables_and_admin():
                 default_admin.set_password(admin_pass)
                 db.session.add(default_admin); db.session.commit()
                 print(f"Default admin user '{admin_user}' created.")
+@login_manager.user_loader
+def load_user(user_id): return User.query.get(int(user_id))
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
 @app.route('/')
-def index(): return "Backend server for the application is running!"
+def index(): return "Backend server is running!"
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -111,7 +126,7 @@ def upload_file():
     file = request.files['file']
     if file.filename == '': return jsonify({'message': 'Chưa chọn file nào'}), 400
     filename = secure_filename(file.filename); file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-    new_user = File(filename=filename, owner=current_user); db.session.add(new_user); db.session.commit()
+    new_file = File(filename=filename, owner=current_user); db.session.add(new_file); db.session.commit()
     return jsonify({'message': 'Tải file lên thành công!'}), 201
 @app.route('/download/<filename>', methods=['GET'])
 @login_required
