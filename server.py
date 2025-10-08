@@ -298,16 +298,24 @@ def upload_avatar():
     
     try:
         # Tải lên Cloudinary, ghi đè ảnh cũ (dùng user ID làm public ID)
-        public_id = f"{CLOUDINARY_FOLDER}/avatar/{current_user.id}"
+        public_id = f"{CLOUDINARY_FOLDER}/avatar/{current_user.id}-{uuid.uuid4().hex}"
         upload_result = cloudinary.uploader.upload(
             avatar, 
             public_id=public_id,
-            overwrite=True,
-            folder=CLOUDINARY_FOLDER,
+            overwrite=False, # Không ghi đè để lưu nhiều avatar
+            folder=f"{CLOUDINARY_FOLDER}/avatars", # Lưu vào thư mục riêng
             resource_type="image"
         )
         
-        # Cập nhật URL trong DB
+        # Lưu bản ghi avatar vào Files (vì client hiện tại sử dụng Files để lưu trữ avatar cũ)
+        new_file = File(
+            filename=f"avatar_{uuid.uuid4().hex[:8]}", # Tên file tạm thời
+            public_id=upload_result['public_id'],
+            user_id=current_user.id
+        )
+        db.session.add(new_file)
+        
+        # Cập nhật avatar_url chính của user
         current_user.avatar_url = upload_result['secure_url']
         db.session.commit()
         
@@ -318,36 +326,68 @@ def upload_avatar():
     except Exception as e:
         return jsonify({'message': f'Lỗi khi tải lên avatar: {e}'}), 500
 
-# THÊM ROUTE: Tái sử dụng Avatar hiện tại
-@app.route('/avatar/reuse', methods=['POST'])
+@app.route('/avatars', methods=['GET'])
 @login_required
-def reuse_current_avatar():
-    current_url = current_user.avatar_url
-    if not current_url:
-        return jsonify({'message': 'Không có Avatar hiện tại để tái sử dụng.'}), 400
+def get_user_avatars():
+    """Trả về tất cả các file ảnh (avatar cũ) mà user đã tải lên."""
+    
+    # Tìm tất cả các file ảnh (avatar) của user hiện tại
+    user_files = File.query.filter(
+        (File.user_id == current_user.id)
+    ).all()
+    
+    # Tạo danh sách các URL avatar
+    avatars = []
+    for f in user_files:
+        # Tạo secure URL cho mỗi public_id
+        avatar_url, _ = cloudinary.utils.cloudinary_url(
+            f.public_id, 
+            resource_type="image", 
+            width=100, 
+            height=100, 
+            crop="fill"
+        )
+        avatars.append({
+            'public_id': f.public_id,
+            'url': avatar_url
+        })
+
+    return jsonify({'avatars': avatars})
+
+# THÊM ROUTE: Sử dụng Avatar đã tải lên (dùng public_id)
+@app.route('/avatar/select', methods=['POST'])
+@login_required
+def select_avatar():
+    data = request.get_json()
+    public_id = data.get('public_id')
+    
+    if not public_id:
+        return jsonify({'message': 'Thiếu ID công khai của avatar.'}), 400
+
+    # Xác minh rằng file tồn tại và thuộc về user
+    file_record = File.query.filter_by(public_id=public_id, user_id=current_user.id).first()
+    if not file_record:
+        return jsonify({'message': 'Avatar không hợp lệ hoặc không thuộc sở hữu của bạn.'}), 403
 
     try:
-        # Lấy public ID từ URL hiện tại để sử dụng cho việc xử lý lại
-        public_id_base = f"{CLOUDINARY_FOLDER}/avatar/{current_user.id}"
-        
-        # Gọi API Cloudinary để tạo lại URL (ví dụ: cập nhật token bảo mật, hoặc áp dụng transform mặc định)
-        reused_url, _ = cloudinary.utils.cloudinary_url(
-            public_id_base, 
+        # Tạo URL mới để đặt làm avatar chính thức
+        new_avatar_url, _ = cloudinary.utils.cloudinary_url(
+            public_id, 
             resource_type="image", 
-            version=datetime.now().timestamp() # Thêm version để đảm bảo URL mới
+            version=datetime.now().timestamp() 
         )
         
-        # Cập nhật URL trong DB với URL mới (có thể có tham số version mới)
-        current_user.avatar_url = reused_url
+        # Cập nhật avatar_url chính của user
+        current_user.avatar_url = new_avatar_url
         db.session.commit()
 
         return jsonify({
-            'message': 'Avatar đã được tái xử lý và cập nhật!', 
+            'message': 'Avatar đã được cập nhật!', 
             'avatar_url': current_user.avatar_url
         })
     except Exception as e:
-        print(f"Cloudinary reuse error: {e}")
-        return jsonify({'message': f'Lỗi khi tái sử dụng avatar: {e}'}), 500
+        return jsonify({'message': f'Lỗi khi chọn avatar: {e}'}), 500
+
 
 # --- ADMIN ROUTES ---
 @app.route('/admin/users', methods=['GET'])
@@ -414,8 +454,10 @@ def admin_delete_user(user_id):
     
     # Xóa file avatar nếu có
     if user.avatar_url:
-         public_id = f"{CLOUDINARY_FOLDER}/avatar/{user.id}"
-         cloudinary.uploader.destroy(public_id, resource_type="image")
+         # Cloudinary's search capability is complex, so we rely on database records.
+         # For simplicity, we assume avatars were saved as Files, but we ensure to clean up general user files too if cascade is not perfect.
+         public_id_base = f"{CLOUDINARY_FOLDER}/avatar/{user.id}"
+         cloudinary.uploader.destroy(public_id_base, resource_type="image")
          
     # Xóa user (sqlalchemy cascade sẽ tự động xóa files và messages)
     db.session.delete(user)
@@ -431,24 +473,19 @@ def admin_delete_user(user_id):
 
 @socketio.on('connect')
 def handle_connect():
-    # Kiểm tra xem người dùng đã đăng nhập chưa
     if current_user.is_authenticated:
         online_users[current_user.id] = request.sid
         print(f"User {current_user.username} connected (SID: {request.sid})")
         
-        # 1. Gửi thông báo tin nhắn chưa đọc (offline_notifications)
-        # Tìm các tin nhắn chưa đọc gửi đến user hiện tại
         unread_messages = (db.session.query(Message.sender_id)
                           .filter(Message.recipient_id == current_user.id, Message.is_read == False)
                           .group_by(Message.sender_id)
                           .all())
                           
-        # Đếm số lượng tin nhắn chưa đọc theo từng người gửi
         counts_dict = {}
         for sender_id, in unread_messages:
             sender = User.query.get(sender_id)
             if sender:
-                # Tìm tổng số tin nhắn chưa đọc từ người gửi này
                 count = Message.query.filter_by(sender_id=sender_id, recipient_id=current_user.id, is_read=False).count()
                 counts_dict[sender.username] = count
 
@@ -458,7 +495,6 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     if current_user.is_authenticated:
-        # Xóa khỏi danh sách online khi ngắt kết nối
         if current_user.id in online_users:
             del online_users[current_user.id]
             print(f"User {current_user.username} disconnected")
@@ -470,9 +506,8 @@ def handle_private_message(data):
     content = data.get('message')
     
     if not recipient_id or not content:
-        return # Bỏ qua tin nhắn không hợp lệ
+        return 
 
-    # 1. Lưu tin nhắn vào DB
     new_msg = Message(
         sender_id=current_user.id, 
         recipient_id=recipient_id, 
@@ -481,7 +516,6 @@ def handle_private_message(data):
     db.session.add(new_msg)
     db.session.commit()
 
-    # 2. Chuẩn bị dữ liệu để gửi đi
     msg_data = {
         'id': new_msg.id,
         'sender': current_user.username,
@@ -489,14 +523,10 @@ def handle_private_message(data):
         'is_read': False 
     }
     
-    # 3. Gửi đến người nhận (nếu online)
     recipient_sid = online_users.get(recipient_id)
     if recipient_sid:
-        # Gửi đến phòng của người nhận
         emit('message_from_server', msg_data, room=recipient_sid)
     
-    # 4. Gửi ngược lại cho người gửi (để hiển thị tin nhắn vừa gửi)
-    # Dùng request.sid để đảm bảo gửi về đúng client hiện tại
     emit('message_from_server', msg_data, room=request.sid)
 
 @socketio.on('start_typing')
@@ -514,5 +544,4 @@ def handle_stop_typing(data):
         emit('user_stopped_typing', {'username': current_user.username}, room=recipient_sid)
 
 if __name__ == '__main__':
-    # Lưu ý: Sử dụng eventlet là cần thiết khi dùng Flask-SocketIO
     socketio.run(app, debug=True, port=5000)
