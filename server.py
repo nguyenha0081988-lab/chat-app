@@ -35,6 +35,7 @@ db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
+# LƯU TRỮ NGƯỜI DÙNG ONLINE: {user_id: session_id}
 online_users = {}
 
 try:
@@ -210,8 +211,16 @@ def login():
 @app.route('/online-users', methods=['GET'])
 @login_required
 def get_online_users():
+    """FIX: Chỉ trả về các user đang online."""
     try:
-        users_info = [{'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url} for u in User.query.all()]
+        online_user_ids = list(online_users.keys())
+        # Truy vấn chỉ các người dùng đang online (và không phải người dùng hiện tại)
+        users = User.query.filter(User.id.in_(online_user_ids), User.id != current_user.id).all()
+
+        users_info = [
+            {'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url} 
+            for u in users
+        ]
         return jsonify({'users': users_info})
     except Exception as e:
         logger.error(f"Error accessing /online-users: {e}")
@@ -245,15 +254,13 @@ def get_history(partner_id):
         messages_to_mark_read.update({Message.is_read: True})
         db.session.commit()
         
-        # 2. Kiểm tra xem tin nhắn gửi đi của user hiện tại có được người nhận xem chưa
-        # Chỉ cần kiểm tra tin nhắn cuối cùng (để tối ưu)
+        # 2. Kiểm tra xem user hiện tại có tin nhắn gửi đi nào đã được đọc không
         last_sent_read = db.session.query(Message).filter(
             (Message.sender_id == current_user.id) & 
             (Message.recipient_id == partner_id) & 
             (Message.is_read == True)
         ).order_by(Message.timestamp.desc()).first()
         
-        # Giả định: Nếu tin nhắn gửi đi mới nhất được đọc, thì tất cả tin đã gửi trước đó cũng được xem
         all_sent_is_read = True if last_sent_read else False
 
 
@@ -270,7 +277,7 @@ def get_history(partner_id):
             is_mine = msg.sender_id == current_user.id
             msg_is_read = msg.is_read
             
-            # Cải tiến: Áp dụng trạng thái Đã xem cho các tin nhắn ĐÃ GỬI (is_mine)
+            # Cải tiến: Áp dụng trạng thái Đã xem cho TẤT CẢ các tin nhắn ĐÃ GỬI
             if is_mine:
                 msg_is_read = all_sent_is_read
             
@@ -329,12 +336,10 @@ def upload_file():
 def get_files():
     """Chỉ trả về các file KHÔNG phải avatar hay bản cập nhật."""
     try:
-        avatar_prefix = f"{CLOUDINARY_AVATAR_FOLDER}/"
-        update_prefix = f"{CLOUDINARY_UPDATE_FOLDER}/"
-
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
+        # Truy vấn tất cả file không phải file hệ thống
         files = File.query.filter(
             not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), 
             not_(File.public_id.in_(files_to_exclude_list))
@@ -485,7 +490,15 @@ def admin_delete_user(user_id):
 @socketio.on('connect')
 def handle_connect():
     if current_user.is_authenticated:
-        online_users[current_user.id] = request.sid; logger.info(f"User {current_user.username} connected (SID: {request.sid})")
+        user_id = current_user.id
+        online_users[user_id] = request.sid
+        logger.info(f"User {current_user.username} connected (SID: {request.sid})")
+        
+        # Gửi sự kiện cho TẤT CẢ client biết có user mới online
+        data = {'id': user_id, 'username': current_user.username, 'avatar_url': current_user.avatar_url}
+        emit('user_connected', data, broadcast=True, include_self=False)
+        
+        # Xử lý thông báo offline (giữ nguyên)
         unread_messages = (db.session.query(Message.sender_id).filter(Message.recipient_id == current_user.id, Message.is_read == False).group_by(Message.sender_id).all())
         counts_dict = {}
         for sender_id, in unread_messages:
@@ -498,7 +511,13 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     if current_user.is_authenticated:
-        if current_user.id in online_users: del online_users[current_user.id]; logger.info(f"User {current_user.username} disconnected")
+        user_id = current_user.id
+        if user_id in online_users: 
+            del online_users[user_id]
+            logger.info(f"User {current_user.username} disconnected")
+            # Gửi sự kiện cho TẤT CẢ client biết có user ngắt kết nối
+            emit('user_disconnected', {'id': user_id, 'username': current_user.username}, broadcast=True, include_self=False)
+
 
 @socketio.on('private_message')
 @login_required
