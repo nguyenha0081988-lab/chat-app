@@ -334,15 +334,14 @@ def get_files():
             not_(File.public_id.in_(files_to_exclude_list))
         ).all()
         
-        # Bổ sung thông tin người tải lên (uploaded_by)
-        file_list = [
-            {
+        file_list = []
+        for f in files:
+            file_list.append({
                 'filename': f.filename, 
                 'public_id': f.public_id,
                 'uploaded_by': f.owner.username 
-            } 
-            for f in files
-        ]
+            })
+            
         return jsonify({'files': file_list})
     except Exception as e:
         logger.error(f"Error accessing /files: {e}")
@@ -364,7 +363,6 @@ def download_file(public_id):
             resource_type="raw", 
             attachment=True, 
             flags="download",
-            # Bắt buộc Cloudinary cung cấp đường dẫn đầy đủ
             secure=True
         )
         return jsonify({'download_url': download_url})
