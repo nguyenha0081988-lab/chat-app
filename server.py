@@ -35,6 +35,7 @@ db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
+# LƯU TRỮ NGƯỜI DÙNG ONLINE: {user_id: session_id}
 online_users = {}
 
 try:
@@ -358,6 +359,7 @@ def download_file(public_id):
             return jsonify({'message': 'File không tồn tại.'}), 404
         
         # Tạo URL tải xuống thô, không cần qua Flask send_file
+        # Client sẽ mở URL này trực tiếp trong trình duyệt
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
             resource_type="raw", 
