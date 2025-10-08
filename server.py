@@ -254,7 +254,7 @@ def download_file(public_id):
 @login_required
 def delete_file(public_id=None):
     # Lấy public_id từ URL (DELETE) hoặc từ JSON body (POST fallback)
-    # LƯU Ý: Nếu client dùng POST, public_id trong URL sẽ là rỗng, ta phải lấy từ JSON
+    # LƯU Ý: Nếu client dùng POST, public_id trong URL có thể là rỗng, ta phải lấy từ JSON
     if public_id is None or not public_id.strip():
         if request.is_json:
             try:
