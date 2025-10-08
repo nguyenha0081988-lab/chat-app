@@ -215,12 +215,15 @@ def get_online_users():
     try:
         online_user_ids = list(online_users.keys())
         # Truy vấn chỉ các người dùng đang online (và không phải người dùng hiện tại)
-        users = User.query.filter(User.id.in_(online_user_ids), User.id != current_user.id).all()
+        # Sử dụng tuple(online_user_ids) để tránh lỗi với một số DB khi dùng list
+        users = User.query.filter(User.id.in_(online_user_ids)).all()
 
-        users_info = [
-            {'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url} 
-            for u in users
-        ]
+        users_info = []
+        for u in users:
+            # Loại bỏ người dùng hiện tại khỏi danh sách
+            if u.id != current_user.id:
+                 users_info.append({'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url})
+        
         return jsonify({'users': users_info})
     except Exception as e:
         logger.error(f"Error accessing /online-users: {e}")
@@ -259,7 +262,7 @@ def get_history(partner_id):
             (Message.sender_id == current_user.id) & 
             (Message.recipient_id == partner_id) & 
             (Message.is_read == True)
-        ).order_by(Message.timestamp.desc()).first()
+        ).first()
         
         all_sent_is_read = True if last_sent_read else False
 
@@ -277,7 +280,7 @@ def get_history(partner_id):
             is_mine = msg.sender_id == current_user.id
             msg_is_read = msg.is_read
             
-            # Cải tiến: Áp dụng trạng thái Đã xem cho TẤT CẢ các tin nhắn ĐÃ GỬI
+            # Cải tiến: Áp dụng trạng thái Đã xem cho TẤT CẢ các tin nhắn ĐÃ GỬI (nếu đối tác đã xem)
             if is_mine:
                 msg_is_read = all_sent_is_read
             
@@ -491,14 +494,16 @@ def admin_delete_user(user_id):
 def handle_connect():
     if current_user.is_authenticated:
         user_id = current_user.id
+        user_data = {'id': user_id, 'username': current_user.username, 'avatar_url': current_user.avatar_url}
+        
+        # 1. Thêm user vào danh sách online
         online_users[user_id] = request.sid
         logger.info(f"User {current_user.username} connected (SID: {request.sid})")
         
-        # Gửi sự kiện cho TẤT CẢ client biết có user mới online
-        data = {'id': user_id, 'username': current_user.username, 'avatar_url': current_user.avatar_url}
-        emit('user_connected', data, broadcast=True, include_self=False)
+        # 2. Gửi sự kiện cho TẤT CẢ client KHÁC biết có user mới online
+        emit('user_connected', user_data, broadcast=True, include_self=False)
         
-        # Xử lý thông báo offline (giữ nguyên)
+        # 3. Xử lý thông báo offline và các tin nhắn đã đọc (giữ nguyên logic)
         unread_messages = (db.session.query(Message.sender_id).filter(Message.recipient_id == current_user.id, Message.is_read == False).group_by(Message.sender_id).all())
         counts_dict = {}
         for sender_id, in unread_messages:
@@ -512,11 +517,12 @@ def handle_connect():
 def handle_disconnect():
     if current_user.is_authenticated:
         user_id = current_user.id
+        username = current_user.username
         if user_id in online_users: 
             del online_users[user_id]
-            logger.info(f"User {current_user.username} disconnected")
+            logger.info(f"User {username} disconnected")
             # Gửi sự kiện cho TẤT CẢ client biết có user ngắt kết nối
-            emit('user_disconnected', {'id': user_id, 'username': current_user.username}, broadcast=True, include_self=False)
+            emit('user_disconnected', {'id': user_id, 'username': username}, broadcast=True, include_self=False)
 
 
 @socketio.on('private_message')
