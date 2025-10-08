@@ -180,6 +180,13 @@ def get_history(partner_id):
 @app.route('/history/<int:partner_id>', methods=['DELETE'])
 @login_required
 def delete_history(partner_id):
+    # LẤY TÊN USER TRƯỚC KHI XÓA
+    partner = User.query.get(partner_id)
+    if not partner:
+        return jsonify({'message': 'User không tồn tại.'}), 404
+        
+    partner_username = partner.username
+    
     # Chỉ xóa tin nhắn của current_user gửi và nhận với partner
     db.session.query(Message).filter(
         or_(
@@ -188,7 +195,9 @@ def delete_history(partner_id):
         )
     ).delete(synchronize_session='fetch')
     db.session.commit()
-    return jsonify({'message': f"Đã xóa lịch sử chat với user ID {partner_id}."})
+    
+    # SỬA LỖI: Trả về tên người dùng thay vì ID
+    return jsonify({'message': f"Đã xóa lịch sử chat với user {partner_username}."})
 
 
 # --- FILE UPLOAD/DOWNLOAD/DELETE ---
@@ -319,13 +328,9 @@ def reuse_current_avatar():
 
     try:
         # Lấy public ID từ URL hiện tại để sử dụng cho việc xử lý lại
-        # Cloudinary URL pattern: .../<folder>/avatar/<user_id>.<extension>
-        # Cần trích xuất phần 'pyside_chat_app/avatar/user_id'
-        
         public_id_base = f"{CLOUDINARY_FOLDER}/avatar/{current_user.id}"
         
         # Gọi API Cloudinary để tạo lại URL (ví dụ: cập nhật token bảo mật, hoặc áp dụng transform mặc định)
-        # Ở đây ta giả định việc gọi API này sẽ đảm bảo tính hợp lệ và căn chỉnh
         reused_url, _ = cloudinary.utils.cloudinary_url(
             public_id_base, 
             resource_type="image", 
