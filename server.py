@@ -249,7 +249,7 @@ def download_file(public_id):
     )
     return jsonify({'download_url': download_url})
 
-# ĐIỂM SỬA CHỮA: Đổi tên route và chỉ chấp nhận POST để tránh lỗi 404 trên các hosting
+# Route DELETE/POST file (đã sửa để client dùng POST)
 @app.route('/delete-file', methods=['POST'])
 @login_required
 def delete_file_post():
@@ -262,10 +262,8 @@ def delete_file_post():
     file_record = File.query.filter_by(public_id=public_id).first()
     
     if not file_record:
-        # Nếu file không tồn tại, trả về 404 (đã sửa lỗi này ở bước trước)
         return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
         
-    # Chỉ Admin hoặc người sở hữu mới được xóa file
     if not current_user.is_admin and file_record.user_id != current_user.id:
         return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
 
@@ -281,7 +279,7 @@ def delete_file_post():
     except Exception as e:
         return jsonify({'message': f'Lỗi khi xóa file: {e}'}), 500
 
-# --- AVATAR UPLOAD ---
+# --- AVATAR UPLOAD/REUSE ---
 @app.route('/avatar/upload', methods=['POST'])
 @login_required
 def upload_avatar():
@@ -310,6 +308,41 @@ def upload_avatar():
         })
     except Exception as e:
         return jsonify({'message': f'Lỗi khi tải lên avatar: {e}'}), 500
+
+# THÊM ROUTE: Tái sử dụng Avatar hiện tại
+@app.route('/avatar/reuse', methods=['POST'])
+@login_required
+def reuse_current_avatar():
+    current_url = current_user.avatar_url
+    if not current_url:
+        return jsonify({'message': 'Không có Avatar hiện tại để tái sử dụng.'}), 400
+
+    try:
+        # Lấy public ID từ URL hiện tại để sử dụng cho việc xử lý lại
+        # Cloudinary URL pattern: .../<folder>/avatar/<user_id>.<extension>
+        # Cần trích xuất phần 'pyside_chat_app/avatar/user_id'
+        
+        public_id_base = f"{CLOUDINARY_FOLDER}/avatar/{current_user.id}"
+        
+        # Gọi API Cloudinary để tạo lại URL (ví dụ: cập nhật token bảo mật, hoặc áp dụng transform mặc định)
+        # Ở đây ta giả định việc gọi API này sẽ đảm bảo tính hợp lệ và căn chỉnh
+        reused_url, _ = cloudinary.utils.cloudinary_url(
+            public_id_base, 
+            resource_type="image", 
+            version=datetime.now().timestamp() # Thêm version để đảm bảo URL mới
+        )
+        
+        # Cập nhật URL trong DB với URL mới (có thể có tham số version mới)
+        current_user.avatar_url = reused_url
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Avatar đã được tái xử lý và cập nhật!', 
+            'avatar_url': current_user.avatar_url
+        })
+    except Exception as e:
+        print(f"Cloudinary reuse error: {e}")
+        return jsonify({'message': f'Lỗi khi tái sử dụng avatar: {e}'}), 500
 
 # --- ADMIN ROUTES ---
 @app.route('/admin/users', methods=['GET'])
