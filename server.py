@@ -13,7 +13,7 @@ from flask_login import LoginManager, UserMixin, login_user, logout_user, curren
 from functools import wraps
 from flask_socketio import SocketIO, emit
 import uuid
-import logging # Thêm logging
+import logging
 
 # Cấu hình logging cơ bản
 logging.basicConfig(level=logging.INFO)
@@ -107,11 +107,9 @@ def load_user(user_id):
 def create_tables_and_admin():
     with app.app_context():
         try:
-            # FIX: Bọc việc tạo bảng trong try-except để bắt lỗi database ngay khi khởi động
             db.create_all()
         except Exception as e:
             logger.error(f"FATAL ERROR: Could not create database tables: {e}")
-            # Trong môi trường production, bạn có thể muốn trả về lỗi 500 ở đây nếu đây là yêu cầu đầu tiên.
         
         if User.query.first() is None:
             admin_user = os.environ.get('DEFAULT_ADMIN_USER', 'admin')
@@ -162,7 +160,6 @@ def upload_update():
         return jsonify({'message': f"Phiên bản {version_number} đã tồn tại."}), 400
 
     try:
-        # Tải lên Cloudinary vào thư mục CLOUDINARY_UPDATE_FOLDER
         public_id = f"{CLOUDINARY_UPDATE_FOLDER}/client_{version_number}_{uuid.uuid4().hex[:6]}"
         upload_result = cloudinary.uploader.upload(
             update_file, 
@@ -171,7 +168,6 @@ def upload_update():
             resource_type="auto"
         )
         
-        # Tạo URL tải xuống
         download_url, _ = cloudinary.utils.cloudinary_url(
             upload_result['public_id'], 
             resource_type="raw", 
@@ -179,7 +175,6 @@ def upload_update():
             flags="download"
         )
 
-        # Lưu vào DB
         new_version = AppVersion(
             version_number=version_number,
             public_id=upload_result['public_id'],
@@ -296,13 +291,21 @@ def get_files():
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
+        # FIX: Xóa điều kiện user_id để hiển thị TẤT CẢ file, trừ file hệ thống
         files = File.query.filter(
-            (File.user_id == current_user.id),
             not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), 
             not_(File.public_id.in_(files_to_exclude_list))
         ).all()
         
-        file_list = [{'filename': f.filename, 'public_id': f.public_id} for f in files]
+        # Bổ sung thông tin người tải lên để người dùng có thể phân biệt
+        file_list = [
+            {
+                'filename': f.filename, 
+                'public_id': f.public_id,
+                'uploaded_by': f.owner.username 
+            } 
+            for f in files
+        ]
         return jsonify({'files': file_list})
     except Exception as e:
         logger.error(f"Error accessing /files: {e}")
