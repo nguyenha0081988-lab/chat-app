@@ -235,13 +235,57 @@ def delete_history(partner_id):
 @login_required
 def get_history(partner_id):
     try:
-        messages_to_mark_read = db.session.query(Message).filter((Message.sender_id == partner_id) & (Message.recipient_id == current_user.id) & (Message.is_read == False))
+        # 1. Đánh dấu tất cả tin nhắn nhận được là đã đọc
+        messages_to_mark_read = db.session.query(Message).filter(
+            (Message.sender_id == partner_id) & 
+            (Message.recipient_id == current_user.id) & 
+            (Message.is_read == False)
+        )
         message_ids_to_update = [msg.id for msg in messages_to_mark_read.all()]
-        messages_to_mark_read.update({Message.is_read: True}); db.session.commit()
-        all_messages = db.session.query(Message).filter(or_((Message.sender_id == current_user.id) & (Message.recipient_id == partner_id), (Message.sender_id == partner_id) & (Message.recipient_id == current_user.id))).order_by(Message.timestamp.asc()).all()
-        history = [{'id': msg.id, 'sender': msg.sender.username, 'message': msg.content, 'is_read': msg.is_read} for msg in all_messages]
+        messages_to_mark_read.update({Message.is_read: True})
+        db.session.commit()
+        
+        # 2. Kiểm tra xem tin nhắn gửi đi của user hiện tại có được người nhận xem chưa
+        # Chỉ cần kiểm tra tin nhắn cuối cùng (để tối ưu)
+        last_sent_read = db.session.query(Message).filter(
+            (Message.sender_id == current_user.id) & 
+            (Message.recipient_id == partner_id) & 
+            (Message.is_read == True)
+        ).order_by(Message.timestamp.desc()).first()
+        
+        # Giả định: Nếu tin nhắn gửi đi mới nhất được đọc, thì tất cả tin đã gửi trước đó cũng được xem
+        all_sent_is_read = True if last_sent_read else False
+
+
+        # 3. Lấy toàn bộ lịch sử chat
+        all_messages = db.session.query(Message).filter(
+            or_(
+                (Message.sender_id == current_user.id) & (Message.recipient_id == partner_id), 
+                (Message.sender_id == partner_id) & (Message.recipient_id == current_user.id)
+            )
+        ).order_by(Message.timestamp.asc()).all()
+        
+        history = []
+        for msg in all_messages:
+            is_mine = msg.sender_id == current_user.id
+            msg_is_read = msg.is_read
+            
+            # Cải tiến: Áp dụng trạng thái Đã xem cho các tin nhắn ĐÃ GỬI (is_mine)
+            if is_mine:
+                msg_is_read = all_sent_is_read
+            
+            history.append({
+                'id': msg.id, 
+                'sender': msg.sender.username, 
+                'message': msg.content, 
+                'is_read': msg_is_read
+            })
+        
+        # 4. Gửi sự kiện 'messages_seen' đến partner nếu họ đang online (để cập nhật UI của họ)
         partner_sid = online_users.get(partner_id)
-        if partner_sid and message_ids_to_update: emit('messages_seen', {'ids': message_ids_to_update}, room=partner_sid, namespace='/')
+        if partner_sid and message_ids_to_update: 
+            emit('messages_seen', {'ids': message_ids_to_update}, room=partner_sid, namespace='/')
+            
         return jsonify(history)
     except Exception as e:
         logger.error(f"Error accessing /history GET: {e}")
@@ -291,13 +335,12 @@ def get_files():
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
-        # FIX: Xóa điều kiện user_id để hiển thị TẤT CẢ file, trừ file hệ thống
         files = File.query.filter(
             not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), 
             not_(File.public_id.in_(files_to_exclude_list))
         ).all()
         
-        # Bổ sung thông tin người tải lên để người dùng có thể phân biệt
+        # Bổ sung thông tin người tải lên (uploaded_by)
         file_list = [
             {
                 'filename': f.filename, 
