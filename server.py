@@ -35,7 +35,6 @@ db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# LƯU TRỮ NGƯỜI DÙNG ONLINE: {user_id: session_id}
 online_users = {}
 
 try:
@@ -214,13 +213,10 @@ def get_online_users():
     """FIX: Chỉ trả về các user đang online."""
     try:
         online_user_ids = list(online_users.keys())
-        # Truy vấn chỉ các người dùng đang online (và không phải người dùng hiện tại)
-        # Sử dụng tuple(online_user_ids) để tránh lỗi với một số DB khi dùng list
         users = User.query.filter(User.id.in_(online_user_ids)).all()
 
         users_info = []
         for u in users:
-            # Loại bỏ người dùng hiện tại khỏi danh sách
             if u.id != current_user.id:
                  users_info.append({'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url})
         
@@ -247,17 +243,11 @@ def delete_history(partner_id):
 @login_required
 def get_history(partner_id):
     try:
-        # 1. Đánh dấu tất cả tin nhắn nhận được là đã đọc
-        messages_to_mark_read = db.session.query(Message).filter(
-            (Message.sender_id == partner_id) & 
-            (Message.recipient_id == current_user.id) & 
-            (Message.is_read == False)
-        )
+        messages_to_mark_read = db.session.query(Message).filter((Message.sender_id == partner_id) & (Message.recipient_id == current_user.id) & (Message.is_read == False))
         message_ids_to_update = [msg.id for msg in messages_to_mark_read.all()]
         messages_to_mark_read.update({Message.is_read: True})
         db.session.commit()
         
-        # 2. Kiểm tra xem user hiện tại có tin nhắn gửi đi nào đã được đọc không
         last_sent_read = db.session.query(Message).filter(
             (Message.sender_id == current_user.id) & 
             (Message.recipient_id == partner_id) & 
@@ -266,8 +256,6 @@ def get_history(partner_id):
         
         all_sent_is_read = True if last_sent_read else False
 
-
-        # 3. Lấy toàn bộ lịch sử chat
         all_messages = db.session.query(Message).filter(
             or_(
                 (Message.sender_id == current_user.id) & (Message.recipient_id == partner_id), 
@@ -280,7 +268,6 @@ def get_history(partner_id):
             is_mine = msg.sender_id == current_user.id
             msg_is_read = msg.is_read
             
-            # Cải tiến: Áp dụng trạng thái Đã xem cho TẤT CẢ các tin nhắn ĐÃ GỬI (nếu đối tác đã xem)
             if is_mine:
                 msg_is_read = all_sent_is_read
             
@@ -291,7 +278,6 @@ def get_history(partner_id):
                 'is_read': msg_is_read
             })
         
-        # 4. Gửi sự kiện 'messages_seen' đến partner nếu họ đang online (để cập nhật UI của họ)
         partner_sid = online_users.get(partner_id)
         if partner_sid and message_ids_to_update: 
             emit('messages_seen', {'ids': message_ids_to_update}, room=partner_sid, namespace='/')
@@ -305,12 +291,13 @@ def get_history(partner_id):
 @app.route('/delete-file', methods=['POST'])
 @login_required
 def delete_file_post():
-    data = request.get_json(); public_id = data.get('public_id')
-    if not public_id: return jsonify({'message': 'Thiếu ID công khai để xóa file.'}), 400
-    file_record = File.query.filter_by(public_id=public_id).first()
-    if not file_record: return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
-    if not current_user.is_admin and file_record.user_id != current_user.id: return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
     try:
+        data = request.get_json(); public_id = data.get('public_id')
+        if not public_id: return jsonify({'message': 'Thiếu ID công khai để xóa file.'}), 400
+        file_record = File.query.filter_by(public_id=public_id).first()
+        if not file_record: return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
+        if not current_user.is_admin and file_record.user_id != current_user.id: return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
+        
         cloudinary.uploader.destroy(file_record.public_id, resource_type="raw")
         db.session.delete(file_record); db.session.commit()
         return jsonify({'message': 'File đã được xóa thành công.'})
@@ -342,7 +329,6 @@ def get_files():
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
-        # Truy vấn tất cả file không phải file hệ thống
         files = File.query.filter(
             not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), 
             not_(File.public_id.in_(files_to_exclude_list))
@@ -366,13 +352,24 @@ def get_files():
 @app.route('/download/<string:public_id>', methods=['GET'])
 @login_required
 def download_file(public_id):
+    """FIX: Đảm bảo trả về URL tải xuống thô (raw download URL) trực tiếp từ Cloudinary."""
     try:
         file_record = File.query.filter_by(public_id=public_id).first()
-        if not file_record: return jsonify({'message': 'File không tồn tại.'}), 404
-        download_url, _ = cloudinary.utils.cloudinary_url(file_record.public_id, resource_type="raw", attachment=True, flags="download")
+        if not file_record: 
+            return jsonify({'message': 'File không tồn tại.'}), 404
+        
+        # Tạo URL tải xuống thô, không cần qua Flask send_file
+        download_url, _ = cloudinary.utils.cloudinary_url(
+            file_record.public_id, 
+            resource_type="raw", 
+            attachment=True, 
+            flags="download",
+            # Bắt buộc Cloudinary cung cấp đường dẫn đầy đủ
+            secure=True
+        )
         return jsonify({'download_url': download_url})
     except Exception as e:
-        logger.error(f"Error accessing /download: {e}")
+        logger.error(f"Error accessing /download/{public_id}: {e}")
         return jsonify({'message': 'Internal Server Error'}), 500
 
 
