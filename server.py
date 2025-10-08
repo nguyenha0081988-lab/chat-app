@@ -249,13 +249,28 @@ def download_file(public_id):
     )
     return jsonify({'download_url': download_url})
 
-@app.route('/delete/<string:public_id>', methods=['DELETE'])
+# ĐIỂM SỬA CHỮA: Cho phép cả DELETE và POST để tương thích với môi trường hosting
+@app.route('/delete/<string:public_id>', methods=['DELETE', 'POST'])
 @login_required
-def delete_file(public_id):
+def delete_file(public_id=None):
+    # Lấy public_id từ URL (DELETE) hoặc từ JSON body (POST fallback)
+    # LƯU Ý: Nếu client dùng POST, public_id trong URL sẽ là rỗng, ta phải lấy từ JSON
+    if public_id is None or not public_id.strip():
+        if request.is_json:
+            try:
+                data = request.get_json()
+                public_id = data.get('public_id')
+            except:
+                pass # Bỏ qua nếu không phải JSON hợp lệ
+        
+    if not public_id:
+        return jsonify({'message': 'Thiếu ID công khai để xóa file.'}), 400
+        
     file_record = File.query.filter_by(public_id=public_id).first()
     
     if not file_record:
-        return jsonify({'message': 'File không tồn tại.'}), 404
+        # Nếu file không tồn tại, trả về 404
+        return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
         
     # Chỉ Admin hoặc người sở hữu mới được xóa file
     if not current_user.is_admin and file_record.user_id != current_user.id:
