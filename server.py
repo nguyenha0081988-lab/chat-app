@@ -365,7 +365,7 @@ def download_file(public_id):
             flags="download",
             secure=True
         )
-        # SỬA LỖI: Trả về URL Cloudinary trực tiếp
+        # Server chỉ cần trả về URL Cloudinary trực tiếp
         return jsonify({'download_url': download_url}) 
     except Exception as e:
         logger.error(f"Error accessing /download/{public_id}: {e}")
