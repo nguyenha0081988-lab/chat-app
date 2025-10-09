@@ -82,7 +82,10 @@ class File(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(255), nullable=False)
     public_id = db.Column(db.String(255), nullable=False, unique=True)
+    # CỘT MỚI: Lưu loại tài nguyên (image, video, raw)
+    resource_type = db.Column(db.String(50), nullable=False, default='raw') 
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    upload_date = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -111,7 +114,8 @@ def load_user(user_id):
 def create_tables_and_admin():
     with app.app_context():
         try:
-            db.create_all()
+            # Sẽ tạo các bảng nếu chưa tồn tại (bao gồm cột mới)
+            db.create_all() 
         except Exception as e:
             logger.error(f"FATAL ERROR: Could not create database tables: {e}")
         
@@ -168,13 +172,13 @@ def upload_update():
         upload_result = cloudinary.uploader.upload(
             update_file, 
             public_id=public_id,
-            folder=CLOUDINARY_UPDATE_FOLDER,
+            folder=None, # Public ID đã chứa đường dẫn
             resource_type="auto"
         )
         
         download_url, _ = cloudinary.utils.cloudinary_url(
             upload_result['public_id'], 
-            resource_type="raw", # Cần là 'raw' để tải về file thực thi/zip
+            resource_type="raw", # Buộc là raw cho file exe/zip update
             attachment=True, 
             flags="download"
         )
@@ -301,7 +305,8 @@ def delete_file_post():
     if not file_record: return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
     if not current_user.is_admin and file_record.user_id != current_user.id: return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
     try:
-        cloudinary.uploader.destroy(file_record.public_id, resource_type="raw")
+        # Sử dụng resource_type đã lưu trong DB để xóa đúng loại
+        cloudinary.uploader.destroy(file_record.public_id, resource_type=file_record.resource_type) 
         db.session.delete(file_record); db.session.commit()
         return jsonify({'message': 'File đã được xóa thành công.'})
     except Exception as e: 
@@ -315,9 +320,23 @@ def upload_file():
     file = request.files['file']
     if file.filename == '': return jsonify({'message': 'Tên file không hợp lệ.'}), 400
     try:
-        public_id = f"{CLOUDINARY_FOLDER}/user_files/{uuid.uuid4().hex}"
-        upload_result = cloudinary.uploader.upload(file, public_id=public_id, folder=f"{CLOUDINARY_FOLDER}/user_files", resource_type="auto")
-        new_file = File(filename=secure_filename(file.filename), public_id=upload_result['public_id'], user_id=current_user.id)
+        public_id_base = f"{CLOUDINARY_FOLDER}/user_files/{uuid.uuid4().hex}"
+        
+        upload_result = cloudinary.uploader.upload(
+            file, 
+            public_id=public_id_base, 
+            resource_type="auto" # Cloudinary tự động xác định loại
+        )
+        
+        # LƯU TRỮ resource_type CHÍNH XÁC VÀO DB
+        resource_type_from_cloudinary = upload_result.get('resource_type', 'raw') 
+        
+        new_file = File(
+            filename=secure_filename(file.filename), 
+            public_id=upload_result['public_id'], 
+            resource_type=resource_type_from_cloudinary, # <-- ĐÃ THÊM resource_type
+            user_id=current_user.id
+        )
         db.session.add(new_file); db.session.commit()
         return jsonify({'message': f'File {new_file.filename} đã được tải lên thành công!'})
     except Exception as e: 
@@ -354,22 +373,20 @@ def get_files():
 @app.route('/download/<string:public_id>', methods=['GET'])
 @login_required
 def download_file(public_id):
-    """Đảm bảo trả về URL tải xuống thô (raw download URL) trực tiếp từ Cloudinary."""
+    """Sử dụng resource_type đã lưu trữ để tạo link tải xuống chính xác."""
     try:
         file_record = File.query.filter_by(public_id=public_id).first()
         if not file_record: 
-            # Đã đúng: Trả về 404 nếu file không có trong DB
             return jsonify({'message': 'File không tồn tại.'}), 404
         
-        # SỬA LỖI: Cần chỉ định resource_type="raw" để lấy file dữ liệu.
+        # SỬ DỤNG resource_type CHÍNH XÁC TỪ DB
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
-            resource_type="raw", # <--- ĐÃ SỬA: Đảm bảo Cloudinary trả về URL tải xuống dữ liệu thô (raw)
+            resource_type=file_record.resource_type, # <-- ĐÃ SỬA: Lấy loại tài nguyên từ DB
             attachment=True, 
             flags="download",
             secure=True
         )
-        # Server chỉ cần trả về URL Cloudinary trực tiếp
         return jsonify({'download_url': download_url}) 
     except Exception as e:
         logger.error(f"Error accessing /download/{public_id}: {e}")
@@ -400,13 +417,14 @@ def upload_avatar():
         upload_result = cloudinary.uploader.upload(
             avatar, 
             public_id=public_id,
-            folder=CLOUDINARY_AVATAR_FOLDER,
+            folder=None,
             resource_type="image"
         )
         
         new_file = File(
             filename=f"avatar_{uuid.uuid4().hex[:8]}", 
             public_id=upload_result['public_id'],
+            resource_type='image', # Avatar luôn là image
             user_id=current_user.id
         )
         db.session.add(new_file)
