@@ -402,10 +402,11 @@ def download_file(public_id):
         if not file_record: 
             return jsonify({'message': 'File không tồn tại.'}), 404
         
-        # SỬ DỤNG resource_type CHÍNH XÁC TỪ DB
+        # SỬ DỤNG resource_type CHÍNH XÁC VÀ THÊM type="upload"
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
             resource_type=file_record.resource_type, 
+            type="upload", # <-- FIX: Chỉ định rõ type để đảm bảo giải quyết đường dẫn đúng
             attachment=True, 
             flags="download",
             secure=True
