@@ -114,7 +114,16 @@ def load_user(user_id):
 def create_tables_and_admin():
     with app.app_context():
         try:
-            # Sẽ tạo các bảng nếu chưa tồn tại (bao gồm cột mới)
+            # FIX LỖI UNDEFINED COLUMN: Buộc xóa bảng file trước khi tạo lại
+            inspector = inspect(db.engine)
+            if 'file' in inspector.get_table_names():
+                # Xóa bảng file cũ để đảm bảo cột resource_type được thêm vào
+                # LƯU Ý: Lệnh này sẽ xóa toàn bộ dữ liệu file cũ và các khóa ngoại liên quan.
+                db.session.execute(db.text("DROP TABLE IF EXISTS file CASCADE;"))
+                db.session.commit()
+                logger.info("Database table 'file' was manually dropped to reset schema.")
+            
+            # Tạo lại tất cả các bảng (bao gồm cột resource_type mới)
             db.create_all() 
         except Exception as e:
             logger.error(f"FATAL ERROR: Could not create database tables: {e}")
@@ -351,6 +360,8 @@ def get_files():
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
+        # Thêm cột resource_type mới (file.resource_type) vào truy vấn,
+        # và nó đã được fix ở @app.before_request nên truy vấn này sẽ hoạt động.
         files = File.query.filter(
             not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), 
             not_(File.public_id.in_(files_to_exclude_list))
@@ -382,7 +393,7 @@ def download_file(public_id):
         # SỬ DỤNG resource_type CHÍNH XÁC TỪ DB
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
-            resource_type=file_record.resource_type, # <-- ĐÃ SỬA: Lấy loại tài nguyên từ DB
+            resource_type=file_record.resource_type, # <-- Lấy loại tài nguyên từ DB
             attachment=True, 
             flags="download",
             secure=True
