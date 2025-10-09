@@ -8,7 +8,7 @@ from flask.cli import with_appcontext
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect, or_, not_
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename # DÙNG LẠI CHO LOGIC TẠO PUBLIC_ID
+from werkzeug.utils import secure_filename 
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from functools import wraps
 from flask_socketio import SocketIO, emit
@@ -209,7 +209,7 @@ def upload_update():
         return jsonify({'message': f'Bản cập nhật v{version_number} đã được tải lên và kích hoạt thành công!', 'url': download_url})
     except Exception as e:
         logger.error(f"Error processing upload-update: {e}")
-        return jsonify({'message': f'Lỗi khi tải file cập nhật lên: {e}'}), 500
+        return jsonify({'message': 'Lỗi khi tải file cập nhật lên: {}'.format(e)}), 500
 
 @app.route('/')
 def index(): 
@@ -223,7 +223,7 @@ def login():
         user = User.query.filter_by(username=username).first()
         if user and user.check_password(password):
             login_user(user)
-            # FIX AVATAR TRÊN CLIENT: Đảm bảo trả về avatar_url hiện tại
+            # FIX AVATAR: Đảm bảo trả về avatar_url hiện tại
             return jsonify({'message': 'Đăng nhập thành công!', 'user_id': user.id, 'username': user.username, 'is_admin': user.is_admin, 'avatar_url': user.avatar_url})
         return jsonify({'message': 'Sai tên đăng nhập hoặc mật khẩu!'}), 401
     except Exception as e:
@@ -327,7 +327,7 @@ def delete_file_post():
         return jsonify({'message': 'File đã được xóa thành công.'})
     except Exception as e: 
         logger.error(f"Error accessing /delete-file: {e}")
-        return jsonify({'message': f'Lỗi khi xóa file: {e}'}), 500
+        return jsonify({'message': 'Lỗi khi xóa file: {}'.format(e)}), 500
 
 @app.route('/upload', methods=['POST'])
 @login_required
@@ -336,14 +336,15 @@ def upload_file():
     file = request.files['file']
     if file.filename == '': return jsonify({'message': 'Tên file không hợp lệ.'}), 400
     
-    # LẤY TÊN FILE GỐC (ĐÃ SỬA: KHÔNG DÙNG secure_filename)
     original_filename = file.filename
     
     try:
-        # TẠO MỘT PUBLIC_ID AN TOÀN HƠN TỪ TÊN FILE GỐC (ĐỂ XỬ LÝ KHOẢNG TRẮNG, KÝ TỰ)
-        safe_filename_part = secure_filename(original_filename.split('.')[0])
+        # FIX LỖI 404: Tạo Public ID AN TOÀN bằng cách lấy phần tên file và chạy qua secure_filename
+        file_base_name = os.path.splitext(original_filename)[0]
+        safe_filename_part = secure_filename(file_base_name)
+        
         public_id_part = f"{safe_filename_part}_{uuid.uuid4().hex[:6]}"
-        public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{public_id_part}" # Tối ưu hóa cách tạo public_id
+        public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{public_id_part}" 
         
         upload_result = cloudinary.uploader.upload(
             file, 
@@ -364,7 +365,7 @@ def upload_file():
         return jsonify({'message': f'File {new_file.filename} đã được tải lên thành công!'})
     except Exception as e: 
         logger.error(f"Error accessing /upload: {e}")
-        return jsonify({'message': f'Lỗi khi tải file lên: {e}'}), 500
+        return jsonify({'message': 'Lỗi khi tải file lên: {}'.format(e)}), 500
 
 @app.route('/files', methods=['GET'])
 @login_required
@@ -475,7 +476,7 @@ def upload_avatar():
         return jsonify({'message': 'Avatar đã được cập nhật!', 'avatar_url': current_user.avatar_url})
     except Exception as e: 
         logger.error(f"Error accessing /avatar/upload: {e}")
-        return jsonify({'message': f'Lỗi khi tải lên avatar: {e}'}), 500
+        return jsonify({'message': 'Lỗi khi tải lên avatar: {}'.format(e)}), 500
 
 @app.route('/avatar/select', methods=['POST'])
 @login_required
