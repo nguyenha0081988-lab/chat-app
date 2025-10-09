@@ -351,7 +351,7 @@ def get_files():
 @app.route('/download/<string:public_id>', methods=['GET'])
 @login_required
 def download_file(public_id):
-    """FIX: Đảm bảo trả về URL tải xuống thô (raw download URL) trực tiếp từ Cloudinary."""
+    """Đảm bảo trả về URL tải xuống thô (raw download URL) trực tiếp từ Cloudinary."""
     try:
         file_record = File.query.filter_by(public_id=public_id).first()
         if not file_record: 
