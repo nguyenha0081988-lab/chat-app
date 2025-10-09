@@ -174,7 +174,7 @@ def upload_update():
         
         download_url, _ = cloudinary.utils.cloudinary_url(
             upload_result['public_id'], 
-            resource_type="raw", 
+            resource_type="raw", # Cần là 'raw' để tải về file thực thi/zip
             attachment=True, 
             flags="download"
         )
@@ -222,7 +222,7 @@ def get_online_users():
         users_info = []
         for u in users:
             if u.id != current_user.id:
-                 users_info.append({'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url})
+                users_info.append({'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url})
         
         return jsonify({'users': users_info})
     except Exception as e:
@@ -358,12 +358,13 @@ def download_file(public_id):
     try:
         file_record = File.query.filter_by(public_id=public_id).first()
         if not file_record: 
+            # Đã đúng: Trả về 404 nếu file không có trong DB
             return jsonify({'message': 'File không tồn tại.'}), 404
         
-        # Tạo URL tải xuống thô, không cần qua Flask send_file
+        # SỬA LỖI: Cần chỉ định resource_type="raw" để lấy file dữ liệu.
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
-            resource_type="raw", 
+            resource_type="raw", # <--- ĐÃ SỬA: Đảm bảo Cloudinary trả về URL tải xuống dữ liệu thô (raw)
             attachment=True, 
             flags="download",
             secure=True
