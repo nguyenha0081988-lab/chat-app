@@ -339,11 +339,12 @@ def upload_file():
     original_filename = file.filename
     
     try:
-        # FIX LỖI 404: Tạo Public ID AN TOÀN bằng cách lấy phần tên file và chạy qua secure_filename
-        file_base_name = os.path.splitext(original_filename)[0]
+        # FIX LỖI 404: Tạo Public ID AN TOÀN bằng cách lấy phần tên file và chạy qua secure_filename, giữ lại đuôi file
+        file_base_name, file_extension = os.path.splitext(original_filename)
         safe_filename_part = secure_filename(file_base_name)
         
-        public_id_part = f"{safe_filename_part}_{uuid.uuid4().hex[:6]}"
+        # TẠO PUBLIC ID BAO GỒM PHẦN MỞ RỘNG (VÍ DỤ: requirements_8da73a.txt)
+        public_id_part = f"{safe_filename_part}_{uuid.uuid4().hex[:6]}{file_extension}"
         public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{public_id_part}" 
         
         upload_result = cloudinary.uploader.upload(
