@@ -112,15 +112,15 @@ class AppVersion(db.Model):
 def load_user(user_id): 
     return User.query.get(int(user_id))
 
-@app.before_request
-def create_tables_and_admin():
+# FIX LỖI SERVER: Di chuyển logic tạo bảng ra khỏi vòng lặp request
+def setup_app(app, db):
+    """Hàm setup chạy một lần khi ứng dụng bắt đầu."""
     with app.app_context():
         try:
-            # FIX LỖI UNDEFINED COLUMN: Buộc xóa bảng file trước khi tạo lại
+            # Vẫn giữ logic FIX Undefined Column ở đây, nhưng nó chỉ chạy một lần
             inspector = inspect(db.engine)
             if 'file' in inspector.get_table_names():
                 # Xóa bảng file cũ để đảm bảo cột resource_type được thêm vào
-                # LƯU Ý: Lệnh này sẽ xóa toàn bộ dữ liệu file cũ và các khóa ngoại liên quan.
                 db.session.execute(db.text("DROP TABLE IF EXISTS file CASCADE;"))
                 db.session.commit()
                 logger.info("Database table 'file' was manually dropped to reset schema.")
@@ -130,6 +130,7 @@ def create_tables_and_admin():
         except Exception as e:
             logger.error(f"FATAL ERROR: Could not create database tables: {e}")
         
+        # Tạo Admin User nếu chưa có
         if User.query.first() is None:
             admin_user = os.environ.get('DEFAULT_ADMIN_USER', 'admin')
             admin_pass = os.environ.get('DEFAULT_ADMIN_PASSWORD', 'adminpass')
@@ -140,6 +141,10 @@ def create_tables_and_admin():
                 db.session.add(default_admin)
                 db.session.commit()
                 logger.info(f"Default admin user '{admin_user}' created.")
+
+# GỌI HÀM SETUP CHẠY MỘT LẦN KHI APP KHỞI ĐỘNG
+setup_app(app, db)
+
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
 @app.route('/update', methods=['GET'])
@@ -335,7 +340,7 @@ def upload_file():
     original_filename = file.filename
     
     try:
-        public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{uuid.uuid4().hex}" # Dùng hằng số CLOUDINARY_USER_FILES_FOLDER
+        public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{uuid.uuid4().hex}"
         
         upload_result = cloudinary.uploader.upload(
             file, 
@@ -367,10 +372,10 @@ def get_files():
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
-        # FIX LỖI HIỂN THỊ: Giới hạn truy vấn chỉ các file nằm trong thư mục người dùng
+        # FIX LỖI HIỂN THỊ: Giới hạn truy vấn chỉ các file nằm trong thư mục người dùng VÀ không phải avatar
         files = File.query.filter(
             File.public_id.like(f'{CLOUDINARY_USER_FILES_FOLDER}/%'), # Chỉ lấy file trong thư mục user_files
-            not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), # Loại trừ avatar
+            not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), # Loại trừ avatar (tuyệt đối)
             not_(File.public_id.in_(files_to_exclude_list)) # Loại trừ file update
         ).all()
         
@@ -416,6 +421,7 @@ def download_file(public_id):
 def get_user_avatars():
     """Chỉ trả về các file avatar đã tải lên bởi người dùng hiện tại."""
     try:
+        # FIX LỖI HIỂN THỊ AVATAR: Chỉ lấy các file trong thư mục avatars
         user_files = File.query.filter(
             File.user_id == current_user.id, 
             File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')
