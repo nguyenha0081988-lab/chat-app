@@ -30,11 +30,10 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 
 # Cấu hình Cloudinary (Yêu cầu biến môi trường CLOUDINARY_*)
-CLOUDINARY_FOLDER = "pyside_chat_app"
-CLOUDINARY_UPDATE_FOLDER = f"{CLOUDINARY_FOLDER}/updates" 
-CLOUDINARY_AVATAR_FOLDER = f"{CLOUDINARY_FOLDER}/avatars" 
-# HẰNG SỐ MỚI: Thư mục chứa file người dùng
-CLOUDINARY_USER_FILES_FOLDER = f"{CLOUDINARY_FOLDER}/user_files"
+CLOUDINARY_ROOT_FOLDER = "pyside_chat_app" # Đổi tên hằng số để rõ ràng hơn
+CLOUDINARY_UPDATE_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/updates" 
+CLOUDINARY_AVATAR_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/avatars" 
+CLOUDINARY_USER_FILES_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/user_files" # Thư mục chứa file người dùng
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -340,6 +339,7 @@ def upload_file():
     original_filename = file.filename
     
     try:
+        # Tối ưu hóa cách tạo public_id để tránh lỗi đường dẫn
         public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{uuid.uuid4().hex}"
         
         upload_result = cloudinary.uploader.upload(
@@ -535,7 +535,7 @@ def admin_delete_user(user_id):
     try:
         user = User.query.get_or_404(user_id)
         if user.id == current_user.id: return jsonify({'message': 'Không thể tự xóa tài khoản của mình.'}), 400
-        if user.avatar_url: cloudinary.uploader.destroy(f"{CLOUDINARY_FOLDER}/avatar/{user.id}", resource_type="image")
+        if user.avatar_url: cloudinary.uploader.destroy(f"{CLOUDINARY_ROOT_FOLDER}/avatar/{user.id}", resource_type="image")
         db.session.delete(user); db.session.commit()
         if user_id in online_users: del online_users[user_id]
         return jsonify({'message': f"Người dùng '{user.username}' đã bị xóa."})
