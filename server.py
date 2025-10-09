@@ -341,7 +341,8 @@ def upload_file():
     try:
         # FIX TÊN FILE: Giữ nguyên tên file trong DB, tạo Public ID an toàn cho Cloudinary
         file_base_name, file_extension = os.path.splitext(original_filename)
-        safe_filename_part = secure_filename(file_base_name)
+        # SỬ DỤNG secure_filename CHỈ CHO PHẦN TÊN GỐC (loại bỏ ký tự bất hợp pháp)
+        safe_filename_part = secure_filename(file_base_name) 
         
         # TẠO PUBLIC ID BAO GỒM PHẦN MỞ RỘNG (VÍ DỤ: requirements_8da73a.txt)
         public_id_part = f"{safe_filename_part}_{uuid.uuid4().hex[:6]}{file_extension}"
