@@ -8,7 +8,7 @@ from flask.cli import with_appcontext
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect, or_, not_
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename 
+from werkzeug.utils import secure_filename # DÙNG LẠI CHO LOGIC TẠO PUBLIC_ID
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from functools import wraps
 from flask_socketio import SocketIO, emit
@@ -30,10 +30,10 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 
 # Cấu hình Cloudinary (Yêu cầu biến môi trường CLOUDINARY_*)
-CLOUDINARY_ROOT_FOLDER = "pyside_chat_app" # Đổi tên hằng số để rõ ràng hơn
+CLOUDINARY_ROOT_FOLDER = "pyside_chat_app" 
 CLOUDINARY_UPDATE_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/updates" 
 CLOUDINARY_AVATAR_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/avatars" 
-CLOUDINARY_USER_FILES_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/user_files" # Thư mục chứa file người dùng
+CLOUDINARY_USER_FILES_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/user_files" 
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -223,6 +223,7 @@ def login():
         user = User.query.filter_by(username=username).first()
         if user and user.check_password(password):
             login_user(user)
+            # FIX AVATAR TRÊN CLIENT: Đảm bảo trả về avatar_url hiện tại
             return jsonify({'message': 'Đăng nhập thành công!', 'user_id': user.id, 'username': user.username, 'is_admin': user.is_admin, 'avatar_url': user.avatar_url})
         return jsonify({'message': 'Sai tên đăng nhập hoặc mật khẩu!'}), 401
     except Exception as e:
@@ -339,8 +340,10 @@ def upload_file():
     original_filename = file.filename
     
     try:
-        # Tối ưu hóa cách tạo public_id để tránh lỗi đường dẫn
-        public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{uuid.uuid4().hex}"
+        # TẠO MỘT PUBLIC_ID AN TOÀN HƠN TỪ TÊN FILE GỐC (ĐỂ XỬ LÝ KHOẢNG TRẮNG, KÝ TỰ)
+        safe_filename_part = secure_filename(original_filename.split('.')[0])
+        public_id_part = f"{safe_filename_part}_{uuid.uuid4().hex[:6]}"
+        public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{public_id_part}" # Tối ưu hóa cách tạo public_id
         
         upload_result = cloudinary.uploader.upload(
             file, 
@@ -402,7 +405,7 @@ def download_file(public_id):
         if not file_record: 
             return jsonify({'message': 'File không tồn tại.'}), 404
         
-        # SỬ DỤNG resource_type CHÍNH XÁC VÀ THÊM type="upload"
+        # FIX CẤU HÌNH CLOUDINARY: THÊM type="upload"
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
             resource_type=file_record.resource_type, 
