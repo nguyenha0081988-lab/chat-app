@@ -79,11 +79,12 @@ class User(UserMixin, db.Model):
     def check_password(self, password): 
         return check_password_hash(self.password_hash, password)
 
+# --- MODEL FILE MỚI ĐÃ TÁI CẤU TRÚC ---
 class File(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(255), nullable=False)
     public_id = db.Column(db.String(255), nullable=False, unique=True)
-    # CỘT MỚI: Lưu loại tài nguyên (image, video, raw)
+    # Cột này KHÔNG phải là tên file, mà là loại tài nguyên của Cloudinary
     resource_type = db.Column(db.String(50), nullable=False, default='raw') 
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     upload_date = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
@@ -116,15 +117,13 @@ def setup_app(app, db):
     """Hàm setup chạy một lần khi ứng dụng bắt đầu."""
     with app.app_context():
         try:
-            # Vẫn giữ logic FIX Undefined Column ở đây, nhưng nó chỉ chạy một lần
+            # FIX LỖI DATABASE: Đảm bảo bảng File được tạo đúng schema
             inspector = inspect(db.engine)
             if 'file' in inspector.get_table_names():
-                # Xóa bảng file cũ để đảm bảo cột resource_type được thêm vào
                 db.session.execute(db.text("DROP TABLE IF EXISTS file CASCADE;"))
                 db.session.commit()
                 logger.info("Database table 'file' was manually dropped to reset schema.")
             
-            # Tạo lại tất cả các bảng (bao gồm cột resource_type mới)
             db.create_all() 
         except Exception as e:
             logger.error(f"FATAL ERROR: Could not create database tables: {e}")
@@ -187,13 +186,13 @@ def upload_update():
         upload_result = cloudinary.uploader.upload(
             update_file, 
             public_id=public_id,
-            folder=None, # Public ID đã chứa đường dẫn
+            folder=None, 
             resource_type="auto"
         )
         
         download_url, _ = cloudinary.utils.cloudinary_url(
             upload_result['public_id'], 
-            resource_type="raw", # Buộc là raw cho file exe/zip update
+            resource_type="raw", 
             attachment=True, 
             flags="download"
         )
@@ -234,7 +233,7 @@ def login():
 @app.route('/online-users', methods=['GET'])
 @login_required
 def get_online_users():
-    """FIX: Chỉ trả về các user đang online."""
+    """Chỉ trả về các user đang online."""
     try:
         online_user_ids = list(online_users.keys())
         users = User.query.filter(User.id.in_(online_user_ids)).all()
@@ -341,9 +340,10 @@ def upload_file():
     try:
         # FIX LỖI 404: Tạo Public ID AN TOÀN bằng cách lấy phần tên file và chạy qua secure_filename, giữ lại đuôi file
         file_base_name, file_extension = os.path.splitext(original_filename)
-        safe_filename_part = secure_filename(file_base_name)
+        # SỬ DỤNG secure_filename CHỈ CHO PHẦN TÊN GỐC (loại bỏ ký tự bất hợp pháp)
+        safe_filename_part = secure_filename(file_base_name) 
         
-        # TẠO PUBLIC ID BAO GỒM PHẦN MỞ RỘNG (VÍ DỤ: requirements_8da73a.txt)
+        # TẠO PUBLIC ID CUỐI CÙNG (DÙNG PHẦN MỞ RỘNG)
         public_id_part = f"{safe_filename_part}_{uuid.uuid4().hex[:6]}{file_extension}"
         public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{public_id_part}" 
         
@@ -357,8 +357,8 @@ def upload_file():
         resource_type_from_cloudinary = upload_result.get('resource_type', 'raw') 
         
         new_file = File(
-            filename=original_filename, # <-- LƯU TÊN FILE GỐC
-            public_id=upload_result['public_id'], 
+            filename=original_filename, # <-- LƯU TÊN FILE GỐC (để hiển thị)
+            public_id=upload_result['public_id'], # Public ID an toàn cho Cloudinary
             resource_type=resource_type_from_cloudinary, 
             user_id=current_user.id
         )
