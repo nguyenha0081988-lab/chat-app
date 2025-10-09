@@ -292,13 +292,12 @@ def get_history(partner_id):
 @app.route('/delete-file', methods=['POST'])
 @login_required
 def delete_file_post():
+    data = request.get_json(); public_id = data.get('public_id')
+    if not public_id: return jsonify({'message': 'Thiếu ID công khai để xóa file.'}), 400
+    file_record = File.query.filter_by(public_id=public_id).first()
+    if not file_record: return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
+    if not current_user.is_admin and file_record.user_id != current_user.id: return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
     try:
-        data = request.get_json(); public_id = data.get('public_id')
-        if not public_id: return jsonify({'message': 'Thiếu ID công khai để xóa file.'}), 400
-        file_record = File.query.filter_by(public_id=public_id).first()
-        if not file_record: return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
-        if not current_user.is_admin and file_record.user_id != current_user.id: return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
-        
         cloudinary.uploader.destroy(file_record.public_id, resource_type="raw")
         db.session.delete(file_record); db.session.commit()
         return jsonify({'message': 'File đã được xóa thành công.'})
@@ -359,7 +358,6 @@ def download_file(public_id):
             return jsonify({'message': 'File không tồn tại.'}), 404
         
         # Tạo URL tải xuống thô, không cần qua Flask send_file
-        # Client sẽ mở URL này trực tiếp trong trình duyệt
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
             resource_type="raw", 
@@ -367,7 +365,8 @@ def download_file(public_id):
             flags="download",
             secure=True
         )
-        return jsonify({'download_url': download_url})
+        # SỬA LỖI: Trả về URL Cloudinary trực tiếp
+        return jsonify({'download_url': download_url}) 
     except Exception as e:
         logger.error(f"Error accessing /download/{public_id}: {e}")
         return jsonify({'message': 'Internal Server Error'}), 500
