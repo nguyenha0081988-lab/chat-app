@@ -428,7 +428,7 @@ def select_avatar():
         return jsonify({'message': 'Avatar đã được cập nhật!', 'avatar_url': current_user.avatar_url})
     except Exception as e: 
         logger.error(f"Error accessing /avatar/select: {e}")
-        return jsonify({'message': f'Lỗi khi chọn avatar: {e}'}), 500
+        return jsonify({'message': 'Internal Server Error'}), 500
 
 @app.route('/admin/users', methods=['GET'])
 @admin_required
