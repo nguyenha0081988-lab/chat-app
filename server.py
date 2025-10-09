@@ -25,6 +25,9 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///' + os.path.join(basedir, 'app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# FIX: Tăng giới hạn kích thước tải lên (ví dụ: 16 MB)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 
+
 
 # Cấu hình Cloudinary (Yêu cầu biến môi trường CLOUDINARY_*)
 CLOUDINARY_FOLDER = "pyside_chat_app"
