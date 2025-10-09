@@ -8,7 +8,6 @@ from flask.cli import with_appcontext
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect, or_, not_
 from werkzeug.security import generate_password_hash, check_password_hash
-# TẠM THỜI GIỮ LẠI CHO CÁC HÀM KHÁC, NHƯNG SẼ KHÔNG DÙNG NÓ CHO FILE UPLOAD
 from werkzeug.utils import secure_filename 
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from functools import wraps
@@ -34,6 +33,8 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 CLOUDINARY_FOLDER = "pyside_chat_app"
 CLOUDINARY_UPDATE_FOLDER = f"{CLOUDINARY_FOLDER}/updates" 
 CLOUDINARY_AVATAR_FOLDER = f"{CLOUDINARY_FOLDER}/avatars" 
+# HẰNG SỐ MỚI: Thư mục chứa file người dùng
+CLOUDINARY_USER_FILES_FOLDER = f"{CLOUDINARY_FOLDER}/user_files"
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -334,7 +335,7 @@ def upload_file():
     original_filename = file.filename
     
     try:
-        public_id_base = f"{CLOUDINARY_FOLDER}/user_files/{uuid.uuid4().hex}"
+        public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{uuid.uuid4().hex}" # Dùng hằng số CLOUDINARY_USER_FILES_FOLDER
         
         upload_result = cloudinary.uploader.upload(
             file, 
@@ -360,14 +361,17 @@ def upload_file():
 @app.route('/files', methods=['GET'])
 @login_required
 def get_files():
-    """Chỉ trả về các file KHÔNG phải avatar hay bản cập nhật."""
+    """FIX: Chỉ trả về các file nằm trong thư mục user_files và không phải avatar."""
     try:
+        # Lấy danh sách public_id của các bản cập nhật (để loại trừ)
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
+        # FIX LỖI HIỂN THỊ: Giới hạn truy vấn chỉ các file nằm trong thư mục người dùng
         files = File.query.filter(
-            not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), 
-            not_(File.public_id.in_(files_to_exclude_list))
+            File.public_id.like(f'{CLOUDINARY_USER_FILES_FOLDER}/%'), # Chỉ lấy file trong thư mục user_files
+            not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), # Loại trừ avatar
+            not_(File.public_id.in_(files_to_exclude_list)) # Loại trừ file update
         ).all()
         
         file_list = []
@@ -410,10 +414,22 @@ def download_file(public_id):
 @app.route('/avatars', methods=['GET'])
 @login_required
 def get_user_avatars():
+    """Chỉ trả về các file avatar đã tải lên bởi người dùng hiện tại."""
     try:
-        user_files = File.query.filter(File.user_id == current_user.id, File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')).all(); avatars = []
+        user_files = File.query.filter(
+            File.user_id == current_user.id, 
+            File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')
+        ).all()
+        
+        avatars = []
         for f in user_files:
-            avatar_url, _ = cloudinary.utils.cloudinary_url(f.public_id, resource_type="image", width=100, height=100, crop="fill")
+            avatar_url, _ = cloudinary.utils.cloudinary_url(
+                f.public_id, 
+                resource_type="image", 
+                width=100, 
+                height=100, 
+                crop="fill"
+            )
             avatars.append({'public_id': f.public_id, 'url': avatar_url})
         return jsonify({'avatars': avatars})
     except Exception as e:
