@@ -8,7 +8,8 @@ from flask.cli import with_appcontext
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect, or_, not_
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
+# TẠM THỜI GIỮ LẠI CHO CÁC HÀM KHÁC, NHƯNG SẼ KHÔNG DÙNG NÓ CHO FILE UPLOAD
+from werkzeug.utils import secure_filename 
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from functools import wraps
 from flask_socketio import SocketIO, emit
@@ -328,6 +329,10 @@ def upload_file():
     if 'file' not in request.files: return jsonify({'message': 'Không tìm thấy file.'}), 400
     file = request.files['file']
     if file.filename == '': return jsonify({'message': 'Tên file không hợp lệ.'}), 400
+    
+    # LẤY TÊN FILE GỐC (ĐÃ SỬA: KHÔNG DÙNG secure_filename)
+    original_filename = file.filename
+    
     try:
         public_id_base = f"{CLOUDINARY_FOLDER}/user_files/{uuid.uuid4().hex}"
         
@@ -341,9 +346,9 @@ def upload_file():
         resource_type_from_cloudinary = upload_result.get('resource_type', 'raw') 
         
         new_file = File(
-            filename=secure_filename(file.filename), 
+            filename=original_filename, # <-- LƯU TÊN FILE GỐC
             public_id=upload_result['public_id'], 
-            resource_type=resource_type_from_cloudinary, # <-- ĐÃ THÊM resource_type
+            resource_type=resource_type_from_cloudinary, 
             user_id=current_user.id
         )
         db.session.add(new_file); db.session.commit()
@@ -360,8 +365,6 @@ def get_files():
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
-        # Thêm cột resource_type mới (file.resource_type) vào truy vấn,
-        # và nó đã được fix ở @app.before_request nên truy vấn này sẽ hoạt động.
         files = File.query.filter(
             not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), 
             not_(File.public_id.in_(files_to_exclude_list))
@@ -393,7 +396,7 @@ def download_file(public_id):
         # SỬ DỤNG resource_type CHÍNH XÁC TỪ DB
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
-            resource_type=file_record.resource_type, # <-- Lấy loại tài nguyên từ DB
+            resource_type=file_record.resource_type, 
             attachment=True, 
             flags="download",
             secure=True
