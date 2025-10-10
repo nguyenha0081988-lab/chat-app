@@ -9,4 +9,5 @@ requests
 python-dateutil
 cloudinary
 psycopg2-binary
+Flask-Migrate
 
