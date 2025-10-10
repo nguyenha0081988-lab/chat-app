@@ -5,11 +5,11 @@ import os, click, cloudinary, cloudinary.uploader, cloudinary.api
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from flask_migrate import Migrate, upgrade # <--- THÊM VÀ SỬA ĐỔI
+from flask_migrate import Migrate # ĐÃ BỎ upgrade Ở ĐÂY, SẼ CHẠY TỪ SHELL
 from sqlalchemy import or_, not_
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from flask_login import LoginManager, UserMixin, login_user, current_user, login_required
+from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from functools import wraps
 from flask_socketio import SocketIO, emit
 import uuid
@@ -36,7 +36,7 @@ CLOUDINARY_AVATAR_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/avatars"
 CLOUDINARY_USER_FILES_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/user_files"
 
 db = SQLAlchemy(app)
-migrate = Migrate(app, db) # <--- KHỞI TẠO MIGRATE
+migrate = Migrate(app, db) # KHỞI TẠO MIGRATE CHO LỆNH SHELL
 login_manager = LoginManager(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -54,7 +54,7 @@ try:
 except Exception as e:
     logger.error(f"Error configuring Cloudinary: {e}")
 
-# --- DECORATOR, MODELS, USER_LOADER ---
+# --- DECORATOR, MODELS, USER_LOADER, UTILS ---
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -98,10 +98,8 @@ class File(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     upload_date = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    # --- THÊM HAI TRƯỜNG CHO LOG MỞ FILE (Đã di trú) ---
     last_opened_by = db.Column(db.String(80), nullable=True)
     last_opened_at = db.Column(db.DateTime, nullable=True)
-    # ---------------------------------------------
 
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -133,20 +131,10 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 
-# --- KHỞI TẠO DATABASE AN TOÀN (Sử dụng Migration) ---
+# --- KHỞI TẠO DATABASE AN TOÀN (Tạo Admin nếu Database trống) ---
 with app.app_context():
-    # 1. ÁP DỤNG MIGRATION MỚI NHẤT (upgrade)
-    try:
-        upgrade() # Tự động áp dụng tất cả các migrations mới nhất, giữ lại dữ liệu
-        logger.info("Database migration check/upgrade completed automatically.")
-    except Exception as e:
-        # Lỗi xảy ra nếu chưa chạy 'flask db init' hoặc có lỗi kết nối
-        logger.error(f"Error during database upgrade: {e}")
-
-    # 2. KIỂM TRA VÀ TẠO ADMIN MẶC ĐỊNH
     if User.query.first() is None:
         try:
-            # Tạo các bảng còn thiếu nếu không có migration (ví dụ: lần đầu chạy)
             db.create_all() 
             admin_user = os.environ.get('DEFAULT_ADMIN_USER', 'admin')
             admin_pass = os.environ.get('DEFAULT_ADMIN_PASSWORD', 'adminpass')
