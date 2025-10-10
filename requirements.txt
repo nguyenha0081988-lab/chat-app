@@ -1,10 +1,10 @@
 Flask
 Flask-SQLAlchemy
 Flask-Login
-Flask-SocketIO
-werkzeug
+flask-socketio
 eventlet
 gunicorn
-psycopg2-binary
+werkzeug
+requests
+python-dateutil   # <--- THÊM DÒNG NÀY
 cloudinary
-Pillow
