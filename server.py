@@ -1,27 +1,27 @@
 import eventlet
-eventlet.monkey_patch()
+eventlet.monkey_patch() # BẮT BUỘC Ở DÒNG ĐẦU TIÊN
 
-import os, click, cloudinary, cloudinary.uploader, cloudinary.api
+import os
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import or_, not_, text # <--- THÊM TEXT
+from sqlalchemy import or_, not_, text
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from flask_login import LoginManager, UserMixin, login_user, current_user, login_required
+from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from functools import wraps
 from flask_socketio import SocketIO, emit
 import uuid
 import logging
 import urllib.parse
 from dateutil import parser as dateparser
-from sqlalchemy.exc import OperationalError # <--- THÊM LỖI CHO XỬ LÝ SQL THÔ
+from sqlalchemy.exc import OperationalError
 
 # Cấu hình logging cơ bản
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- KHỞI TẠO VÀ CẤU HÌNH ---
+# --- KHỞI TẠO VÀ CẤU HÌNH GLOBAL ---
 basedir = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
@@ -36,7 +36,6 @@ CLOUDINARY_AVATAR_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/avatars"
 CLOUDINARY_USER_FILES_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/user_files"
 
 db = SQLAlchemy(app)
-# ĐÃ BỎ MIGRATE
 login_manager = LoginManager(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -130,41 +129,34 @@ class AppVersion(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-# --- HÀM TỰ ĐỘNG THÊM CỘT BẰNG SQL THÔ ---
 def apply_schema_fixes_manually(db):
     """Thêm các cột mới (last_opened) nếu chúng chưa tồn tại, giữ lại dữ liệu."""
     with db.engine.connect() as connection:
         # Kiểm tra và thêm cột last_opened_by
         try:
-            # Sửa đổi lệnh SQL cho phù hợp với cả PostgreSQL và SQLite
-            # Đối với PostgreSQL, cần thêm NOT NULL/NULL rõ ràng, nhưng ta dùng cách đơn giản nhất
+            # Dùng VARCHAR cho cả SQLite và Postgres (VARCHAR là tương thích rộng)
             connection.execute(text("ALTER TABLE file ADD COLUMN last_opened_by VARCHAR(80)"))
             print("Successfully added column 'last_opened_by' via raw SQL.")
         except OperationalError:
-            # Lỗi OperationalError (ví dụ: 'column already exists') là điều chúng ta mong đợi
-            print("Column 'last_opened_by' already exists or failed to add (expected).")
+            print("Column 'last_opened_by' already exists or failed to add.")
         
         # Kiểm tra và thêm cột last_opened_at
         try:
-            # Đối với DATETIME, kiểu dữ liệu cần khớp với Database engine
-            # Dùng TEXT cho SQLite hoặc TIMESTAMP cho Postgres nếu VARCHAR không hoạt động
+            # Dùng DATETIME cho cả SQLite và Postgres
             connection.execute(text("ALTER TABLE file ADD COLUMN last_opened_at DATETIME"))
             print("Successfully added column 'last_opened_at' via raw SQL.")
         except OperationalError:
-            print("Column 'last_opened_at' already exists or failed to add (expected).")
+            print("Column 'last_opened_at' already exists or failed to add.")
         
         connection.commit()
-# ----------------------------------------
 
 
-# --- KHỞI TẠO DATABASE AN TOÀN (Sử dụng db.create_all() và SQL thô) ---
+# --- KHỐI KHỞI TẠO ỨNG DỤNG (Chỉ chạy một lần khi app được tải) ---
 with app.app_context():
-    # 1. TẠO TẤT CẢ CÁC BẢNG NẾU CHƯA TỒN TẠI (Đảm bảo bảng 'log' mới được tạo)
-    # Nếu bảng 'file' đã tồn tại, db.create_all() sẽ không làm gì, giữ lại dữ liệu
+    # 1. TẠO TẤT CẢ CÁC BẢNG NẾU CHƯA TỒN TẠI (Đảm bảo bảng 'log' được tạo)
     db.create_all()
     
-    # 2. ÁP DỤNG CÁC SỬA CHỮA THỦ CÔNG (THÊM CỘT)
-    # Lệnh này sẽ chạy sau db.create_all() để thêm các cột mới vào bảng 'file'
+    # 2. ÁP DỤNG CÁC SỬA CHỮA THỦ CÔNG (THÊM CỘT BẰNG SQL THÔ)
     try:
         apply_schema_fixes_manually(db)
     except Exception as e:
@@ -189,8 +181,6 @@ with app.app_context():
 # ------------------------------------------------------------------------
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
-# ... (Phần Routes giữ nguyên) ...
-
 @app.route('/update', methods=['GET'])
 def check_for_update():
     try:
