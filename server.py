@@ -5,17 +5,17 @@ import os, click, cloudinary, cloudinary.uploader, cloudinary.api
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from flask_migrate import Migrate # ĐÃ BỎ upgrade Ở ĐÂY, SẼ CHẠY TỪ SHELL
-from sqlalchemy import or_, not_
+from sqlalchemy import or_, not_, text # <--- THÊM TEXT
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
+from flask_login import LoginManager, UserMixin, login_user, current_user, login_required
 from functools import wraps
 from flask_socketio import SocketIO, emit
 import uuid
 import logging
 import urllib.parse
-from dateutil import parser as dateparser 
+from dateutil import parser as dateparser
+from sqlalchemy.exc import OperationalError # <--- THÊM LỖI CHO XỬ LÝ SQL THÔ
 
 # Cấu hình logging cơ bản
 logging.basicConfig(level=logging.INFO)
@@ -36,7 +36,7 @@ CLOUDINARY_AVATAR_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/avatars"
 CLOUDINARY_USER_FILES_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/user_files"
 
 db = SQLAlchemy(app)
-migrate = Migrate(app, db) # KHỞI TẠO MIGRATE CHO LỆNH SHELL
+# ĐÃ BỎ MIGRATE
 login_manager = LoginManager(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -130,12 +130,49 @@ class AppVersion(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
+# --- HÀM TỰ ĐỘNG THÊM CỘT BẰNG SQL THÔ ---
+def apply_schema_fixes_manually(db):
+    """Thêm các cột mới (last_opened) nếu chúng chưa tồn tại, giữ lại dữ liệu."""
+    with db.engine.connect() as connection:
+        # Kiểm tra và thêm cột last_opened_by
+        try:
+            # Sửa đổi lệnh SQL cho phù hợp với cả PostgreSQL và SQLite
+            # Đối với PostgreSQL, cần thêm NOT NULL/NULL rõ ràng, nhưng ta dùng cách đơn giản nhất
+            connection.execute(text("ALTER TABLE file ADD COLUMN last_opened_by VARCHAR(80)"))
+            print("Successfully added column 'last_opened_by' via raw SQL.")
+        except OperationalError:
+            # Lỗi OperationalError (ví dụ: 'column already exists') là điều chúng ta mong đợi
+            print("Column 'last_opened_by' already exists or failed to add (expected).")
+        
+        # Kiểm tra và thêm cột last_opened_at
+        try:
+            # Đối với DATETIME, kiểu dữ liệu cần khớp với Database engine
+            # Dùng TEXT cho SQLite hoặc TIMESTAMP cho Postgres nếu VARCHAR không hoạt động
+            connection.execute(text("ALTER TABLE file ADD COLUMN last_opened_at DATETIME"))
+            print("Successfully added column 'last_opened_at' via raw SQL.")
+        except OperationalError:
+            print("Column 'last_opened_at' already exists or failed to add (expected).")
+        
+        connection.commit()
+# ----------------------------------------
 
-# --- KHỞI TẠO DATABASE AN TOÀN (Tạo Admin nếu Database trống) ---
+
+# --- KHỞI TẠO DATABASE AN TOÀN (Sử dụng db.create_all() và SQL thô) ---
 with app.app_context():
+    # 1. TẠO TẤT CẢ CÁC BẢNG NẾU CHƯA TỒN TẠI (Đảm bảo bảng 'log' mới được tạo)
+    # Nếu bảng 'file' đã tồn tại, db.create_all() sẽ không làm gì, giữ lại dữ liệu
+    db.create_all()
+    
+    # 2. ÁP DỤNG CÁC SỬA CHỮA THỦ CÔNG (THÊM CỘT)
+    # Lệnh này sẽ chạy sau db.create_all() để thêm các cột mới vào bảng 'file'
+    try:
+        apply_schema_fixes_manually(db)
+    except Exception as e:
+        logger.error(f"FATAL: Failed to apply manual SQL fixes: {e}")
+
+    # 3. KIỂM TRA VÀ TẠO ADMIN MẶC ĐỊNH
     if User.query.first() is None:
         try:
-            db.create_all() 
             admin_user = os.environ.get('DEFAULT_ADMIN_USER', 'admin')
             admin_pass = os.environ.get('DEFAULT_ADMIN_PASSWORD', 'adminpass')
             
@@ -147,11 +184,13 @@ with app.app_context():
                 logger.info(f"Default admin user '{admin_user}' created.")
                 log_action(admin_user, "Initial admin account created by system.", is_admin=True)
         except Exception as e:
-            logger.error(f"Error during initial setup/admin creation: {e}")
+            logger.error(f"Error during initial admin creation: {e}")
             
 # ------------------------------------------------------------------------
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
+# ... (Phần Routes giữ nguyên) ...
+
 @app.route('/update', methods=['GET'])
 def check_for_update():
     try:
