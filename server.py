@@ -14,6 +14,7 @@ from functools import wraps
 from flask_socketio import SocketIO, emit
 import uuid
 import logging
+import urllib.parse  # <-- THÊM THƯ VIỆN MỚI
 
 # Cấu hình logging cơ bản
 logging.basicConfig(level=logging.INFO)
@@ -25,11 +26,9 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-secret-key-for-development')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///' + os.path.join(basedir, 'app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-# FIX: Tăng giới hạn kích thước tải lên (ví dụ: 16 MB)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 
 
-
-# Cấu hình Cloudinary (Yêu cầu biến môi trường CLOUDINARY_*)
+# Cấu hình Cloudinary
 CLOUDINARY_ROOT_FOLDER = "pyside_chat_app" 
 CLOUDINARY_UPDATE_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/updates" 
 CLOUDINARY_AVATAR_FOLDER = f"{CLOUDINARY_ROOT_FOLDER}/avatars" 
@@ -83,7 +82,6 @@ class File(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(255), nullable=False)
     public_id = db.Column(db.String(255), nullable=False, unique=True)
-    # CỘT MỚI: Lưu loại tài nguyên (image, video, raw)
     resource_type = db.Column(db.String(50), nullable=False, default='raw') 
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     upload_date = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
@@ -100,7 +98,6 @@ class Message(db.Model):
     recipient = db.relationship('User', foreign_keys=[recipient_id])
 
 class AppVersion(db.Model):
-    """Lưu trữ thông tin về các bản cập nhật của ứng dụng."""
     id = db.Column(db.Integer, primary_key=True)
     version_number = db.Column(db.String(50), nullable=False, unique=True)
     public_id = db.Column(db.String(255), nullable=False)
@@ -111,25 +108,20 @@ class AppVersion(db.Model):
 def load_user(user_id): 
     return User.query.get(int(user_id))
 
-# FIX LỖI SERVER: Di chuyển logic tạo bảng ra khỏi vòng lặp request
 def setup_app(app, db):
     """Hàm setup chạy một lần khi ứng dụng bắt đầu."""
     with app.app_context():
         try:
-            # Vẫn giữ logic FIX Undefined Column ở đây, nhưng nó chỉ chạy một lần
             inspector = inspect(db.engine)
             if 'file' in inspector.get_table_names():
-                # Xóa bảng file cũ để đảm bảo cột resource_type được thêm vào
                 db.session.execute(db.text("DROP TABLE IF EXISTS file CASCADE;"))
                 db.session.commit()
                 logger.info("Database table 'file' was manually dropped to reset schema.")
             
-            # Tạo lại tất cả các bảng (bao gồm cột resource_type mới)
             db.create_all() 
         except Exception as e:
             logger.error(f"FATAL ERROR: Could not create database tables: {e}")
         
-        # Tạo Admin User nếu chưa có
         if User.query.first() is None:
             admin_user = os.environ.get('DEFAULT_ADMIN_USER', 'admin')
             admin_pass = os.environ.get('DEFAULT_ADMIN_PASSWORD', 'adminpass')
@@ -141,14 +133,11 @@ def setup_app(app, db):
                 db.session.commit()
                 logger.info(f"Default admin user '{admin_user}' created.")
 
-# GỌI HÀM SETUP CHẠY MỘT LẦN KHI APP KHỞI ĐỘNG
 setup_app(app, db)
-
 
 # --- CÁC ĐƯỜNG DẪN API (ROUTES) ---
 @app.route('/update', methods=['GET'])
 def check_for_update():
-    """Cung cấp phiên bản mới nhất và link tải xuống."""
     try:
         latest_version_record = AppVersion.query.order_by(AppVersion.timestamp.desc()).first()
         
@@ -166,11 +155,9 @@ def check_for_update():
         logger.error(f"Error accessing /update route: {e}")
         return jsonify({'message': 'Internal Server Error'}), 500
 
-
 @app.route('/admin/upload-update', methods=['POST'])
 @admin_required
 def upload_update():
-    """Upload file cập nhật client (dành cho Admin)."""
     if 'update_file' not in request.files:
         return jsonify({'message': 'Thiếu file cập nhật.'}), 400
         
@@ -187,13 +174,13 @@ def upload_update():
         upload_result = cloudinary.uploader.upload(
             update_file, 
             public_id=public_id,
-            folder=None, # Public ID đã chứa đường dẫn
+            folder=None,
             resource_type="auto"
         )
         
         download_url, _ = cloudinary.utils.cloudinary_url(
             upload_result['public_id'], 
-            resource_type="raw", # Buộc là raw cho file exe/zip update
+            resource_type="raw",
             attachment=True, 
             flags="download"
         )
@@ -219,22 +206,26 @@ def index():
 @app.route('/login', methods=['POST'])
 def login():
     try:
-        data = request.get_json(); username, password = data.get('username'), data.get('password')
+        data = request.get_json()
+        username, password = data.get('username'), data.get('password')
         user = User.query.filter_by(username=username).first()
         if user and user.check_password(password):
             login_user(user)
-            # FIX AVATAR: Đảm bảo trả về avatar_url hiện tại
-            return jsonify({'message': 'Đăng nhập thành công!', 'user_id': user.id, 'username': user.username, 'is_admin': user.is_admin, 'avatar_url': user.avatar_url})
+            return jsonify({
+                'message': 'Đăng nhập thành công!', 
+                'user_id': user.id, 
+                'username': user.username, 
+                'is_admin': user.is_admin, 
+                'avatar_url': user.avatar_url
+            })
         return jsonify({'message': 'Sai tên đăng nhập hoặc mật khẩu!'}), 401
     except Exception as e:
         logger.error(f"Error during login: {e}")
         return jsonify({'message': 'Lỗi server trong quá trình xử lý đăng nhập.'}), 500
 
-
 @app.route('/online-users', methods=['GET'])
 @login_required
 def get_online_users():
-    """Chỉ trả về các user đang online."""
     try:
         online_user_ids = list(online_users.keys())
         users = User.query.filter(User.id.in_(online_user_ids)).all()
@@ -242,7 +233,11 @@ def get_online_users():
         users_info = []
         for u in users:
             if u.id != current_user.id:
-                users_info.append({'id': u.id, 'username': u.username, 'avatar_url': u.avatar_url})
+                users_info.append({
+                    'id': u.id, 
+                    'username': u.username, 
+                    'avatar_url': u.avatar_url
+                })
         
         return jsonify({'users': users_info})
     except Exception as e:
@@ -254,10 +249,18 @@ def get_online_users():
 def delete_history(partner_id):
     try:
         partner = User.query.get(partner_id)
-        if not partner: return jsonify({'message': 'User không tồn tại.'}), 404
+        if not partner: 
+            return jsonify({'message': 'User không tồn tại.'}), 404
+        
         partner_username = partner.username
-        db.session.query(Message).filter(or_((Message.sender_id == current_user.id) & (Message.recipient_id == partner_id), (Message.sender_id == partner_id) & (Message.recipient_id == current_user.id))).delete(synchronize_session='fetch')
+        db.session.query(Message).filter(
+            or_(
+                (Message.sender_id == current_user.id) & (Message.recipient_id == partner_id), 
+                (Message.sender_id == partner_id) & (Message.recipient_id == current_user.id)
+            )
+        ).delete(synchronize_session='fetch')
         db.session.commit()
+        
         return jsonify({'message': f"Đã xóa lịch sử chat với user {partner_username}."})
     except Exception as e:
         logger.error(f"Error accessing /history DELETE: {e}")
@@ -267,7 +270,11 @@ def delete_history(partner_id):
 @login_required
 def get_history(partner_id):
     try:
-        messages_to_mark_read = db.session.query(Message).filter((Message.sender_id == partner_id) & (Message.recipient_id == current_user.id) & (Message.is_read == False))
+        messages_to_mark_read = db.session.query(Message).filter(
+            (Message.sender_id == partner_id) & 
+            (Message.recipient_id == current_user.id) & 
+            (Message.is_read == False)
+        )
         message_ids_to_update = [msg.id for msg in messages_to_mark_read.all()]
         messages_to_mark_read.update({Message.is_read: True})
         db.session.commit()
@@ -311,19 +318,26 @@ def get_history(partner_id):
         logger.error(f"Error accessing /history GET: {e}")
         return jsonify({'message': 'Internal Server Error'}), 500
 
-
 @app.route('/delete-file', methods=['POST'])
 @login_required
 def delete_file_post():
-    data = request.get_json(); public_id = data.get('public_id')
-    if not public_id: return jsonify({'message': 'Thiếu ID công khai để xóa file.'}), 400
+    data = request.get_json()
+    public_id = data.get('public_id')
+    
+    if not public_id: 
+        return jsonify({'message': 'Thiếu ID công khai để xóa file.'}), 400
+    
     file_record = File.query.filter_by(public_id=public_id).first()
-    if not file_record: return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
-    if not current_user.is_admin and file_record.user_id != current_user.id: return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
+    if not file_record: 
+        return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
+    
+    if not current_user.is_admin and file_record.user_id != current_user.id: 
+        return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
+    
     try:
-        # Sử dụng resource_type đã lưu trong DB để xóa đúng loại
         cloudinary.uploader.destroy(file_record.public_id, resource_type=file_record.resource_type) 
-        db.session.delete(file_record); db.session.commit()
+        db.session.delete(file_record)
+        db.session.commit()
         return jsonify({'message': 'File đã được xóa thành công.'})
     except Exception as e: 
         logger.error(f"Error accessing /delete-file: {e}")
@@ -332,38 +346,39 @@ def delete_file_post():
 @app.route('/upload', methods=['POST'])
 @login_required
 def upload_file():
-    if 'file' not in request.files: return jsonify({'message': 'Không tìm thấy file.'}), 400
+    if 'file' not in request.files: 
+        return jsonify({'message': 'Không tìm thấy file.'}), 400
+    
     file = request.files['file']
-    if file.filename == '': return jsonify({'message': 'Tên file không hợp lệ.'}), 400
+    if file.filename == '': 
+        return jsonify({'message': 'Tên file không hợp lệ.'}), 400
     
     original_filename = file.filename
     
     try:
-        # FIX TÊN FILE: Giữ nguyên tên file trong DB, tạo Public ID an toàn cho Cloudinary
         file_base_name, file_extension = os.path.splitext(original_filename)
-        # SỬ DỤNG secure_filename CHỈ CHO PHẦN TÊN GỐC (loại bỏ ký tự bất hợp pháp)
         safe_filename_part = secure_filename(file_base_name) 
         
-        # TẠO PUBLIC ID BAO GỒM PHẦN MỞ RỘNG (VÍ DỤ: requirements_8da73a.txt)
         public_id_part = f"{safe_filename_part}_{uuid.uuid4().hex[:6]}{file_extension}"
         public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{public_id_part}" 
         
         upload_result = cloudinary.uploader.upload(
             file, 
             public_id=public_id_base, 
-            resource_type="auto" # Cloudinary tự động xác định loại
+            resource_type="auto"
         )
         
-        # LƯU TRỮ resource_type CHÍNH XÁC VÀO DB
         resource_type_from_cloudinary = upload_result.get('resource_type', 'raw') 
         
         new_file = File(
-            filename=original_filename, # <-- LƯU TÊN FILE GỐC
+            filename=original_filename,
             public_id=upload_result['public_id'], 
             resource_type=resource_type_from_cloudinary, 
             user_id=current_user.id
         )
-        db.session.add(new_file); db.session.commit()
+        db.session.add(new_file)
+        db.session.commit()
+        
         return jsonify({'message': f'File {new_file.filename} đã được tải lên thành công!'})
     except Exception as e: 
         logger.error(f"Error accessing /upload: {e}")
@@ -372,13 +387,10 @@ def upload_file():
 @app.route('/files', methods=['GET'])
 @login_required
 def get_files():
-    """Chỉ trả về các file nằm trong thư mục user_files và không phải avatar."""
     try:
-        # Lấy danh sách public_id của các bản cập nhật (để loại trừ)
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
         
-        # Giới hạn truy vấn chỉ các file nằm trong thư mục người dùng VÀ không phải avatar
         files = File.query.filter(
             File.public_id.like(f'{CLOUDINARY_USER_FILES_FOLDER}/%'), 
             not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')), 
@@ -399,34 +411,54 @@ def get_files():
         return jsonify({'message': 'Internal Server Error'}), 500
 
 
-@app.route('/download/<string:public_id>', methods=['GET'])
+# ============================================================
+# FIX LỖI 404: THAY ĐỔI ROUTE DOWNLOAD
+# ============================================================
+@app.route('/download', methods=['POST'])  # <-- ĐỔI SANG POST
 @login_required
-def download_file(public_id):
-    """Sử dụng resource_type đã lưu trữ để tạo link tải xuống chính xác."""
+def download_file():
+    """
+    Client sẽ gửi public_id qua POST request body thay vì URL parameter.
+    Điều này tránh vấn đề với dấu `/` trong public_id.
+    """
     try:
+        data = request.get_json()
+        public_id = data.get('public_id')
+        
+        if not public_id:
+            return jsonify({'message': 'Thiếu public_id'}), 400
+        
+        logger.info(f"[DOWNLOAD] Nhận yêu cầu tải file: {public_id}")
+        
         file_record = File.query.filter_by(public_id=public_id).first()
         if not file_record: 
+            logger.warning(f"[DOWNLOAD] File không tồn tại trong DB: {public_id}")
             return jsonify({'message': 'File không tồn tại.'}), 404
         
-        # FIX CẤU HÌNH CLOUDINARY: THÊM type="upload"
+        logger.info(f"[DOWNLOAD] Tìm thấy file: {file_record.filename}, resource_type: {file_record.resource_type}")
+        
+        # Tạo URL tải xuống từ Cloudinary
         download_url, _ = cloudinary.utils.cloudinary_url(
             file_record.public_id, 
-            resource_type=file_record.resource_type, 
-            type="upload", # <-- FIX: Chỉ định rõ type để đảm bảo giải quyết đường dẫn đúng
+            resource_type=file_record.resource_type,
+            type="upload",
             attachment=True, 
-            flags="download",
+            flags="attachment",  # <-- ĐỔI THÀNH "attachment" ĐỂ BUỘC TẢI VỀ
             secure=True
         )
+        
+        logger.info(f"[DOWNLOAD] URL tạo thành công: {download_url[:100]}...")
+        
         return jsonify({'download_url': download_url}) 
+        
     except Exception as e:
-        logger.error(f"Error accessing /download/{public_id}: {e}")
+        logger.error(f"Error in /download: {e}")
         return jsonify({'message': 'Internal Server Error'}), 500
 
 
 @app.route('/avatars', methods=['GET'])
 @login_required
 def get_user_avatars():
-    """Chỉ trả về các file avatar đã tải lên bởi người dùng hiện tại."""
     try:
         user_files = File.query.filter(
             File.user_id == current_user.id, 
@@ -443,6 +475,7 @@ def get_user_avatars():
                 crop="fill"
             )
             avatars.append({'public_id': f.public_id, 'url': avatar_url})
+        
         return jsonify({'avatars': avatars})
     except Exception as e:
         logger.error(f"Error accessing /avatars: {e}")
@@ -451,7 +484,9 @@ def get_user_avatars():
 @app.route('/avatar/upload', methods=['POST'])
 @login_required
 def upload_avatar():
-    if 'avatar' not in request.files: return jsonify({'message': 'Không tìm thấy file ảnh.'}), 400
+    if 'avatar' not in request.files: 
+        return jsonify({'message': 'Không tìm thấy file ảnh.'}), 400
+    
     avatar = request.files['avatar']
     
     try:
@@ -466,7 +501,7 @@ def upload_avatar():
         new_file = File(
             filename=f"avatar_{uuid.uuid4().hex[:8]}", 
             public_id=upload_result['public_id'],
-            resource_type='image', # Avatar luôn là image
+            resource_type='image',
             user_id=current_user.id
         )
         db.session.add(new_file)
@@ -474,7 +509,10 @@ def upload_avatar():
         current_user.avatar_url = upload_result['secure_url']
         db.session.commit()
         
-        return jsonify({'message': 'Avatar đã được cập nhật!', 'avatar_url': current_user.avatar_url})
+        return jsonify({
+            'message': 'Avatar đã được cập nhật!', 
+            'avatar_url': current_user.avatar_url
+        })
     except Exception as e: 
         logger.error(f"Error accessing /avatar/upload: {e}")
         return jsonify({'message': 'Lỗi khi tải lên avatar: {}'.format(e)}), 500
@@ -482,14 +520,29 @@ def upload_avatar():
 @app.route('/avatar/select', methods=['POST'])
 @login_required
 def select_avatar():
-    data = request.get_json(); public_id = data.get('public_id')
-    if not public_id: return jsonify({'message': 'Thiếu ID công khai của avatar.'}), 400
+    data = request.get_json()
+    public_id = data.get('public_id')
+    
+    if not public_id: 
+        return jsonify({'message': 'Thiếu ID công khai của avatar.'}), 400
+    
     file_record = File.query.filter_by(public_id=public_id, user_id=current_user.id).first()
-    if not file_record: return jsonify({'message': 'Avatar không hợp lệ hoặc không thuộc sở hữu của bạn.'}), 403
+    if not file_record: 
+        return jsonify({'message': 'Avatar không hợp lệ hoặc không thuộc sở hữu của bạn.'}), 403
+    
     try:
-        new_avatar_url, _ = cloudinary.utils.cloudinary_url(file_record.public_id, resource_type="image", version=datetime.now().timestamp())
-        current_user.avatar_url = new_avatar_url; db.session.commit()
-        return jsonify({'message': 'Avatar đã được cập nhật!', 'avatar_url': current_user.avatar_url})
+        new_avatar_url, _ = cloudinary.utils.cloudinary_url(
+            file_record.public_id, 
+            resource_type="image", 
+            version=datetime.now().timestamp()
+        )
+        current_user.avatar_url = new_avatar_url
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Avatar đã được cập nhật!', 
+            'avatar_url': current_user.avatar_url
+        })
     except Exception as e: 
         logger.error(f"Error accessing /avatar/select: {e}")
         return jsonify({'message': 'Internal Server Error'}), 500
@@ -498,7 +551,11 @@ def select_avatar():
 @admin_required
 def admin_get_users():
     try:
-        users = User.query.all(); user_list = [{'id': u.id, 'username': u.username, 'is_admin': u.is_admin} for u in users]
+        users = User.query.all()
+        user_list = [
+            {'id': u.id, 'username': u.username, 'is_admin': u.is_admin} 
+            for u in users
+        ]
         return jsonify({'users': user_list})
     except Exception as e:
         logger.error(f"Error accessing /admin/users GET: {e}")
@@ -508,10 +565,22 @@ def admin_get_users():
 @admin_required
 def admin_add_user():
     try:
-        data = request.get_json(); username = data.get('username'); password = data.get('password'); is_admin = data.get('is_admin', False)
-        if not username or not password: return jsonify({'message': 'Thiếu tên đăng nhập hoặc mật khẩu.'}), 400
-        if User.query.filter_by(username=username).first(): return jsonify({'message': 'Tên đăng nhập đã tồn tại.'}), 400
-        new_user = User(username=username, is_admin=is_admin); new_user.set_password(password); db.session.add(new_user); db.session.commit()
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        is_admin = data.get('is_admin', False)
+        
+        if not username or not password: 
+            return jsonify({'message': 'Thiếu tên đăng nhập hoặc mật khẩu.'}), 400
+        
+        if User.query.filter_by(username=username).first(): 
+            return jsonify({'message': 'Tên đăng nhập đã tồn tại.'}), 400
+        
+        new_user = User(username=username, is_admin=is_admin)
+        new_user.set_password(password)
+        db.session.add(new_user)
+        db.session.commit()
+        
         return jsonify({'message': f"Người dùng '{username}' đã được tạo."})
     except Exception as e:
         logger.error(f"Error accessing /admin/users POST: {e}")
@@ -521,16 +590,26 @@ def admin_add_user():
 @admin_required
 def admin_edit_user(user_id):
     try:
-        user = User.query.get_or_404(user_id); data = request.get_json()
+        user = User.query.get_or_404(user_id)
+        data = request.get_json()
+        
         new_username = data.get('username')
         if new_username and new_username != user.username:
-            if User.query.filter_by(username=new_username).first(): return jsonify({'message': 'Tên đăng nhập mới đã tồn tại.'}), 400
+            if User.query.filter_by(username=new_username).first(): 
+                return jsonify({'message': 'Tên đăng nhập mới đã tồn tại.'}), 400
             user.username = new_username
+        
         new_password = data.get('password')
-        if new_password: user.set_password(new_password)
+        if new_password: 
+            user.set_password(new_password)
+        
         is_admin = data.get('is_admin')
-        if is_admin is not None: user.is_admin = is_admin
-        db.session.commit(); return jsonify({'message': f"Thông tin người dùng ID {user_id} đã được cập nhật."})
+        if is_admin is not None: 
+            user.is_admin = is_admin
+        
+        db.session.commit()
+        
+        return jsonify({'message': f"Thông tin người dùng ID {user_id} đã được cập nhật."})
     except Exception as e:
         logger.error(f"Error accessing /admin/users PUT: {e}")
         return jsonify({'message': 'Internal Server Error'}), 500
@@ -540,10 +619,22 @@ def admin_edit_user(user_id):
 def admin_delete_user(user_id):
     try:
         user = User.query.get_or_404(user_id)
-        if user.id == current_user.id: return jsonify({'message': 'Không thể tự xóa tài khoản của mình.'}), 400
-        if user.avatar_url: cloudinary.uploader.destroy(f"{CLOUDINARY_ROOT_FOLDER}/avatar/{user.id}", resource_type="image")
-        db.session.delete(user); db.session.commit()
-        if user_id in online_users: del online_users[user_id]
+        
+        if user.id == current_user.id: 
+            return jsonify({'message': 'Không thể tự xóa tài khoản của mình.'}), 400
+        
+        if user.avatar_url: 
+            cloudinary.uploader.destroy(
+                f"{CLOUDINARY_ROOT_FOLDER}/avatar/{user.id}", 
+                resource_type="image"
+            )
+        
+        db.session.delete(user)
+        db.session.commit()
+        
+        if user_id in online_users: 
+            del online_users[user_id]
+        
         return jsonify({'message': f"Người dùng '{user.username}' đã bị xóa."})
     except Exception as e:
         logger.error(f"Error accessing /admin/users DELETE: {e}")
@@ -554,59 +645,88 @@ def admin_delete_user(user_id):
 def handle_connect():
     if current_user.is_authenticated:
         user_id = current_user.id
-        user_data = {'id': user_id, 'username': current_user.username, 'avatar_url': current_user.avatar_url}
+        user_data = {
+            'id': user_id, 
+            'username': current_user.username, 
+            'avatar_url': current_user.avatar_url
+        }
         
-        # 1. Thêm user vào danh sách online
         online_users[user_id] = request.sid
         logger.info(f"User {current_user.username} connected (SID: {request.sid})")
         
-        # 2. Gửi sự kiện cho TẤT CẢ client KHÁC biết có user mới online
         emit('user_connected', user_data, broadcast=True, include_self=False)
         
-        # 3. Xử lý thông báo offline và các tin nhắn đã đọc (giữ nguyên logic)
-        unread_messages = (db.session.query(Message.sender_id).filter(Message.recipient_id == current_user.id, Message.is_read == False).group_by(Message.sender_id).all())
+        unread_messages = (
+            db.session.query(Message.sender_id)
+            .filter(Message.recipient_id == current_user.id, Message.is_read == False)
+            .group_by(Message.sender_id)
+            .all()
+        )
+        
         counts_dict = {}
         for sender_id, in unread_messages:
             sender = User.query.get(sender_id)
             if sender:
-                count = Message.query.filter_by(sender_id=sender_id, recipient_id=current_user.id, is_read=False).count()
+                count = Message.query.filter_by(
+                    sender_id=sender_id, 
+                    recipient_id=current_user.id, 
+                    is_read=False
+                ).count()
                 counts_dict[sender.username] = count
-        if counts_dict: emit('offline_notifications', {'counts': counts_dict}, room=request.sid)
+        
+        if counts_dict: 
+            emit('offline_notifications', {'counts': counts_dict}, room=request.sid)
 
 @socketio.on('disconnect')
 def handle_disconnect():
     if current_user.is_authenticated:
         user_id = current_user.id
         username = current_user.username
+        
         if user_id in online_users: 
             del online_users[user_id]
             logger.info(f"User {username} disconnected")
-            # Gửi sự kiện cho TẤT CẢ client biết có user ngắt kết nối
             emit('user_disconnected', {'id': user_id, 'username': username}, broadcast=True, include_self=False)
-
 
 @socketio.on('private_message')
 @login_required
 def handle_private_message(data):
-    recipient_id = data.get('recipient_id'); content = data.get('message')
-    if not recipient_id or not content: return 
-    new_msg = Message(sender_id=current_user.id, recipient_id=recipient_id, content=content); db.session.add(new_msg); db.session.commit()
-    msg_data = {'id': new_msg.id, 'sender': current_user.username, 'message': content, 'is_read': False }
+    recipient_id = data.get('recipient_id')
+    content = data.get('message')
+    
+    if not recipient_id or not content: 
+        return 
+    
+    new_msg = Message(sender_id=current_user.id, recipient_id=recipient_id, content=content)
+    db.session.add(new_msg)
+    db.session.commit()
+    
+    msg_data = {
+        'id': new_msg.id, 
+        'sender': current_user.username, 
+        'message': content, 
+        'is_read': False 
+    }
+    
     recipient_sid = online_users.get(recipient_id)
-    if recipient_sid: emit('message_from_server', msg_data, room=recipient_sid)
+    if recipient_sid: 
+        emit('message_from_server', msg_data, room=recipient_sid)
+    
     emit('message_from_server', msg_data, room=request.sid)
 
 @socketio.on('start_typing')
 @login_required
 def handle_start_typing(data):
     recipient_sid = online_users.get(data.get('recipient_id'))
-    if recipient_sid: emit('user_is_typing', {'username': current_user.username}, room=recipient_sid)
+    if recipient_sid: 
+        emit('user_is_typing', {'username': current_user.username}, room=recipient_sid)
 
 @socketio.on('stop_typing')
 @login_required
 def handle_stop_typing(data):
     recipient_sid = online_users.get(data.get('recipient_id'))
-    if recipient_sid: emit('user_stopped_typing', {'username': current_user.username}, room=recipient_sid)
+    if recipient_sid: 
+        emit('user_stopped_typing', {'username': current_user.username}, room=recipient_sid)
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, port=5000)
