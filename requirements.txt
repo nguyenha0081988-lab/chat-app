@@ -6,5 +6,6 @@ eventlet
 gunicorn
 werkzeug
 requests
-python-dateutil   # <--- THÊM DÒNG NÀY
+python-dateutil
 cloudinary
+psycopg2-binary   # <--- THÊM DÒNG NÀY
