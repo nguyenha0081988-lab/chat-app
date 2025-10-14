@@ -16,7 +16,7 @@ import uuid
 import logging
 import requests
 import time
-import urllib.parse # BỔ SUNG: Import cho việc xử lý URL/params
+import urllib.parse 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -142,12 +142,11 @@ class FileAccessLog(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
+# TÁCH LOGIC KHỞI TẠO DATABASE RA KHỎI LUỒNG CHÍNH (Khắc phục Timeout)
 def initialize_database(app, db):
     """Khởi tạo database và tạo admin user nếu cần."""
     with app.app_context():
         try:
-            inspector = inspect(db.engine)
-            # DÙNG db.create_all() ĐỂ TẠO CÁC BẢNG BỊ THIẾU/MỚI (HOẶC GẶP LỖI NẾU BẢNG CŨ CÓ SẴN)
             db.create_all() 
             logger.info("Database tables created successfully (or checked).")
         except Exception as e:
@@ -164,6 +163,7 @@ def initialize_database(app, db):
                 db.session.commit()
                 logger.info(f"Default admin user '{admin_user}' created.")
 
+# Gắn lệnh CLI để Render có thể chạy setup trước khi Gunicorn chạy chính
 @app.cli.command("init-db")
 @with_appcontext
 def init_db_command():
@@ -172,9 +172,10 @@ def init_db_command():
     click.echo('Database initialized/checked.')
 
 # ============================================================
-# LOGIC KEEP ALIVE (KHÔNG CẦN THAY ĐỔI CHỨC NĂNG)
+# LOGIC KEEP ALIVE (Đã sửa lỗi context)
 # ============================================================
 SELF_PING_URL = os.environ.get('SELF_PING_URL')
+keep_alive_started = False # Biến cờ
 
 def ping_self():
     """Thực hiện ping server định kỳ để ngăn Render ngủ đông."""
@@ -195,7 +196,8 @@ def start_keep_alive_thread():
         logger.info(f"Bắt đầu luồng Keep-Alive cho URL: {SELF_PING_URL}")
         eventlet.spawn(ping_self) 
 
-start_keep_alive_thread()
+# Lệnh này không còn chạy ở cấp module nữa. Nó sẽ được gọi trong index().
+# start_keep_alive_thread() 
 # ============================================================
 
 @app.route('/update', methods=['GET'])
@@ -238,7 +240,15 @@ def upload_update():
 
 @app.route('/')
 def index():
+    global keep_alive_started
     logger.info("Health check received on /.")
+    
+    # KHẮC PHỤC LỖI CONTEXT: Chỉ khởi động Keep-Alive khi ứng dụng đã load xong
+    if not keep_alive_started:
+        start_keep_alive_thread()
+        keep_alive_started = True
+        logger.info("Keep-Alive thread initialized successfully.")
+        
     return "Backend server for the application is running!"
 
 @app.route('/login', methods=['POST'])
@@ -372,7 +382,6 @@ def upload_file():
     if 'file' not in request.files:
         return jsonify({'message': 'Không tìm thấy file.'}), 400
     
-    # BỔ SUNG: Lấy tên thư mục
     target_folder_name = request.form.get('target_folder', 'Gốc')
     
     file = request.files['file']
@@ -384,9 +393,7 @@ def upload_file():
         file_base_name, file_extension = os.path.splitext(original_filename)
         safe_filename_part = secure_filename(file_base_name)
         
-        # Xây dựng đường dẫn Cloudinary Public ID
         folder_path = CLOUDINARY_USER_FILES_FOLDER
-        # Nếu thư mục đích không phải 'Gốc' hoặc 'Gốc (/)', thêm nó vào đường dẫn
         if target_folder_name and target_folder_name != 'Gốc' and target_folder_name != 'Gốc (/)':
              clean_folder_name = target_folder_name.strip('/')
              folder_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{clean_folder_name}"
@@ -431,7 +438,6 @@ def get_files():
         for f in files:
             uploaded_by_username = f.owner.username if f.owner else "Người dùng đã bị xóa"
             
-            # Trích xuất tên thư mục từ public_id
             full_folder_prefix = f"{CLOUDINARY_USER_FILES_FOLDER}/"
             folder_name = 'Gốc'
             if full_folder_prefix in f.public_id:
@@ -559,7 +565,6 @@ def get_cloudinary_folder_path(folder_name):
 def admin_get_folders():
     """Lấy danh sách thư mục con trong CLOUDINARY_USER_FILES_FOLDER."""
     try:
-        # ĐÃ SỬA: Thay thế sub_folders bằng folders để tương thích với Cloudinary SDK mới hơn
         folders_response = cloudinary.api.folders(CLOUDINARY_USER_FILES_FOLDER)
         
         folders = [f['name'] for f in folders_response.get('folders', [])]
@@ -871,7 +876,7 @@ def handle_stop_typing(data):
         emit('user_stopped_typing', {'username': current_user.username}, room=recipient_sid)
 
 if __name__ == '__main__':
-    # Logic chạy Eventlet/SocketIO sử dụng biến môi trường PORT (Ưu tiên cho Render)
+    # Logic chạy Eventlet/SocketIO sử dụng cổng 5000 (Local)
     port = int(os.environ.get('PORT', 5000)) 
     
     initialize_database(app, db)
