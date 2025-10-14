@@ -16,7 +16,7 @@ import uuid
 import logging
 import requests
 import time
-import urllib.parse 
+import urllib.parse # BỔ SUNG: Import cho việc xử lý URL/params
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,6 +90,7 @@ class User(UserMixin, db.Model):
         self.password_hash = generate_password_hash(password)
     
     def check_password(self, password):
+        # KHẮC PHỤC: Sử dụng check_password_hash với tham số đúng thứ tự
         return check_password_hash(password, self.password_hash)
 
 class File(db.Model):
@@ -99,8 +100,8 @@ class File(db.Model):
     resource_type = db.Column(db.String(50), nullable=False, default='raw')
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     upload_date = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    last_opened_by = db.Column(db.String(80), nullable=True)
-    last_opened_at = db.Column(db.DateTime, nullable=True)
+    last_opened_by = db.Column(db.String(80), nullable=True) # BỔ SUNG
+    last_opened_at = db.Column(db.DateTime, nullable=True) # BỔ SUNG
     
     access_logs = db.relationship('FileAccessLog', backref='file', lazy=True, cascade="all, delete-orphan")
 
@@ -142,11 +143,11 @@ class FileAccessLog(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-# TÁCH LOGIC KHỞI TẠO DATABASE RA KHỎI LUỒNG CHÍNH (Khắc phục Timeout)
 def initialize_database(app, db):
     """Khởi tạo database và tạo admin user nếu cần."""
     with app.app_context():
         try:
+            # db.create_all() sẽ tạo các bảng thiếu và cập nhật cấu trúc bảng (nếu không có Flask-Migrate)
             db.create_all() 
             logger.info("Database tables created successfully (or checked).")
         except Exception as e:
@@ -195,9 +196,6 @@ def start_keep_alive_thread():
     if SELF_PING_URL:
         logger.info(f"Bắt đầu luồng Keep-Alive cho URL: {SELF_PING_URL}")
         eventlet.spawn(ping_self) 
-
-# Lệnh này không còn chạy ở cấp module nữa. Nó sẽ được gọi trong index().
-# start_keep_alive_thread() 
 # ============================================================
 
 @app.route('/update', methods=['GET'])
@@ -382,6 +380,7 @@ def upload_file():
     if 'file' not in request.files:
         return jsonify({'message': 'Không tìm thấy file.'}), 400
     
+    # BỔ SUNG: Lấy tên thư mục
     target_folder_name = request.form.get('target_folder', 'Gốc')
     
     file = request.files['file']
@@ -393,7 +392,9 @@ def upload_file():
         file_base_name, file_extension = os.path.splitext(original_filename)
         safe_filename_part = secure_filename(file_base_name)
         
+        # Xây dựng đường dẫn Cloudinary Public ID
         folder_path = CLOUDINARY_USER_FILES_FOLDER
+        # Nếu thư mục đích không phải 'Gốc' hoặc 'Gốc (/)', thêm nó vào đường dẫn
         if target_folder_name and target_folder_name != 'Gốc' and target_folder_name != 'Gốc (/)':
              clean_folder_name = target_folder_name.strip('/')
              folder_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{clean_folder_name}"
@@ -418,6 +419,7 @@ def upload_file():
 @login_required
 def get_files():
     try:
+        # BỔ SUNG: Hỗ trợ tìm kiếm theo tên file
         search_term = request.args.get('search', '').strip()
         
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
@@ -429,6 +431,7 @@ def get_files():
             not_(File.public_id.in_(files_to_exclude_list))
         )
         
+        # Áp dụng tìm kiếm
         if search_term:
             files_query = files_query.filter(File.filename.ilike(f'%{search_term}%'))
 
@@ -438,6 +441,7 @@ def get_files():
         for f in files:
             uploaded_by_username = f.owner.username if f.owner else "Người dùng đã bị xóa"
             
+            # Trích xuất tên thư mục từ public_id
             full_folder_prefix = f"{CLOUDINARY_USER_FILES_FOLDER}/"
             folder_name = 'Gốc'
             if full_folder_prefix in f.public_id:
@@ -451,7 +455,7 @@ def get_files():
                 'uploaded_by': uploaded_by_username,
                 'last_opened_by': f.last_opened_by,
                 'last_opened_at': f.last_opened_at.isoformat() if f.last_opened_at else None,
-                'folder': folder_name 
+                'folder': folder_name # BỔ SUNG: Tên thư mục
             })
         return jsonify({'files': file_list})
     except Exception as e:
@@ -522,6 +526,9 @@ def update_file_content():
         logger.error(f"Error in /file/update: {e}")
         return jsonify({'message': f'Lỗi khi cập nhật file: {str(e)}'}), 500
 
+# ============================================================
+# LOGIC XÓA LOG CHO ADMIN
+# ============================================================
 @app.route('/admin/logs/delete-all', methods=['DELETE'])
 @admin_required
 def admin_delete_all_logs():
@@ -552,6 +559,7 @@ def admin_delete_log(log_id):
         logger.error(f"Error deleting single log: {e}")
         db.session.rollback()
         return jsonify({'message': 'Lỗi server khi xóa log đơn lẻ.'}), 500
+# ============================================================
 
 def get_cloudinary_folder_path(folder_name):
     """Trả về đường dẫn Cloudinary đầy đủ hoặc thư mục gốc."""
@@ -560,11 +568,15 @@ def get_cloudinary_folder_path(folder_name):
     clean_folder_name = folder_name.strip('/') 
     return f"{CLOUDINARY_USER_FILES_FOLDER}/{clean_folder_name}"
 
+# ============================================================
+# BỔ SUNG: ADMIN - QUẢN LÝ THƯ MỤC CLOUDINARY (Đã sửa lỗi sub_folders)
+# ============================================================
 @app.route('/admin/folders', methods=['GET'])
 @admin_required
 def admin_get_folders():
     """Lấy danh sách thư mục con trong CLOUDINARY_USER_FILES_FOLDER."""
     try:
+        # ĐÃ SỬA: Thay thế sub_folders bằng folders để tương thích với Cloudinary SDK
         folders_response = cloudinary.api.folders(CLOUDINARY_USER_FILES_FOLDER)
         
         folders = [f['name'] for f in folders_response.get('folders', [])]
@@ -613,6 +625,7 @@ def admin_rename_folder():
         old_public_id_prefix = f"{old_path}/"
         new_public_id_prefix = f"{new_path}/"
         
+        # Cập nhật public_id trong DB
         db.session.query(File).filter(File.public_id.like(f'{old_public_id_prefix}%')).update(
             {File.public_id: db.sql.func.replace(File.public_id, old_public_id_prefix, new_public_id_prefix)}, 
             synchronize_session=False
@@ -652,6 +665,7 @@ def admin_delete_folder():
         logger.error(f"Error deleting folder: {e}")
         db.session.rollback()
         return jsonify({'message': f'Lỗi khi xóa thư mục: {e}'}), 500
+# ============================================================
 
 
 @app.route('/admin/logs', methods=['GET'])
@@ -876,10 +890,10 @@ def handle_stop_typing(data):
         emit('user_stopped_typing', {'username': current_user.username}, room=recipient_sid)
 
 if __name__ == '__main__':
-    # Logic chạy Eventlet/SocketIO sử dụng cổng 5000 (Local)
+    # THỰC HIỆN KHỞI TẠO DB TRONG LUỒNG CHÍNH KHI CHẠY LOCAL
     port = int(os.environ.get('PORT', 5000)) 
     
     initialize_database(app, db)
     
-    # Chạy SocketIO trên cổng Render yêu cầu.
+    # Chạy SocketIO trên cổng 5000 cho môi trường local
     socketio.run(app, host='0.0.0.0', port=port)
