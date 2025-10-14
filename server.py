@@ -16,7 +16,7 @@ import uuid
 import logging
 import requests
 import time
-import urllib.parse 
+import urllib.parse # BỔ SUNG: Import cho việc xử lý URL/params
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ class FileAccessLog(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-# TÁCH LOGIC KHỞI TẠO DATABASE RA KHỎI LUỒNG CHÍNH
+# TÁCH LOGIC KHỞI TẠO DATABASE RA KHỎI LUỒNG CHÍNH (Khắc phục Timeout)
 def initialize_database(app, db):
     """Khởi tạo database và tạo admin user nếu cần."""
     with app.app_context():
@@ -174,6 +174,7 @@ def init_db_command():
     """Khởi tạo database và admin user cho Render Build Hook."""
     initialize_database(app, db)
     click.echo('Database initialized/checked.')
+# -----------------------------------------------------------
 
 # ============================================================
 # LOGIC KEEP ALIVE (KHÔNG CẦN THAY ĐỔI CHỨC NĂNG)
@@ -370,12 +371,16 @@ def delete_file_post():
         logger.error(f"Error accessing /delete-file: {e}")
         return jsonify({'message': f'Lỗi khi xóa file: {e}'}), 500
 
+# ============================================================
+# CẬP NHẬT: UPLOAD FILE (HỖ TRỢ THƯ MỤC)
+# ============================================================
 @app.route('/upload', methods=['POST'])
 @login_required
 def upload_file():
     if 'file' not in request.files:
         return jsonify({'message': 'Không tìm thấy file.'}), 400
     
+    # BỔ SUNG: Lấy tên thư mục
     target_folder_name = request.form.get('target_folder', 'Gốc')
     
     file = request.files['file']
@@ -387,9 +392,13 @@ def upload_file():
         file_base_name, file_extension = os.path.splitext(original_filename)
         safe_filename_part = secure_filename(file_base_name)
         
+        # Xây dựng đường dẫn Cloudinary Public ID
         folder_path = CLOUDINARY_USER_FILES_FOLDER
+        # Nếu thư mục đích không phải 'Gốc' hoặc 'Gốc (/)', thêm nó vào đường dẫn
         if target_folder_name and target_folder_name != 'Gốc' and target_folder_name != 'Gốc (/)':
-             folder_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{target_folder_name}"
+             # Đảm bảo tên thư mục không chứa ký tự cấm (thường là /)
+             clean_folder_name = target_folder_name.strip('/')
+             folder_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{clean_folder_name}"
         
         public_id_base = f"{folder_path}/{safe_filename_part}_{uuid.uuid4().hex[:6]}"
         
@@ -407,10 +416,14 @@ def upload_file():
         logger.error(f"Error accessing /upload: {e}")
         return jsonify({'message': f'Lỗi khi tải file lên: {e}'}), 500
 
+# ============================================================
+# CẬP NHẬT: GET FILES (HỖ TRỢ TÌM KIẾM VÀ TRẢ VỀ THƯ MỤC)
+# ============================================================
 @app.route('/files', methods=['GET'])
 @login_required
 def get_files():
     try:
+        # BỔ SUNG: Hỗ trợ tìm kiếm theo tên file
         search_term = request.args.get('search', '').strip()
         
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
@@ -422,6 +435,7 @@ def get_files():
             not_(File.public_id.in_(files_to_exclude_list))
         )
         
+        # Áp dụng tìm kiếm
         if search_term:
             files_query = files_query.filter(File.filename.ilike(f'%{search_term}%'))
 
@@ -431,11 +445,13 @@ def get_files():
         for f in files:
             uploaded_by_username = f.owner.username if f.owner else "Người dùng đã bị xóa"
             
+            # Trích xuất tên thư mục từ public_id
             full_folder_prefix = f"{CLOUDINARY_USER_FILES_FOLDER}/"
             folder_name = 'Gốc'
             if full_folder_prefix in f.public_id:
                 folder_path_raw = f.public_id.split(full_folder_prefix, 1)[-1]
                 if '/' in folder_path_raw:
+                    # Lấy phần tên thư mục (trước dấu / cuối cùng)
                     folder_name = folder_path_raw.rsplit('/', 1)[0]
                 
             file_list.append({
@@ -444,7 +460,7 @@ def get_files():
                 'uploaded_by': uploaded_by_username,
                 'last_opened_by': f.last_opened_by,
                 'last_opened_at': f.last_opened_at.isoformat() if f.last_opened_at else None,
-                'folder': folder_name 
+                'folder': folder_name # BỔ SUNG: Tên thư mục
             })
         return jsonify({'files': file_list})
     except Exception as e:
@@ -553,15 +569,20 @@ def get_cloudinary_folder_path(folder_name):
     clean_folder_name = folder_name.strip('/') 
     return f"{CLOUDINARY_USER_FILES_FOLDER}/{clean_folder_name}"
 
+# ============================================================
+# BỔ SUNG: ADMIN - QUẢN LÝ THƯ MỤC CLOUDINARY
+# ============================================================
 @app.route('/admin/folders', methods=['GET'])
 @admin_required
 def admin_get_folders():
     """Lấy danh sách thư mục con trong CLOUDINARY_USER_FILES_FOLDER."""
     try:
+        # Lấy danh sách các thư mục con ngay dưới CLOUDINARY_USER_FILES_FOLDER
         folders_response = cloudinary.api.sub_folders(CLOUDINARY_USER_FILES_FOLDER)
         
         folders = [f['name'] for f in folders_response.get('folders', [])]
         
+        # Thêm thư mục gốc mặc định (Root)
         folders.insert(0, 'Gốc (/)') 
         
         return jsonify({'folders': folders})
@@ -606,6 +627,7 @@ def admin_rename_folder():
         old_public_id_prefix = f"{old_path}/"
         new_public_id_prefix = f"{new_path}/"
         
+        # Cập nhật public_id trong DB
         db.session.query(File).filter(File.public_id.like(f'{old_public_id_prefix}%')).update(
             {File.public_id: db.sql.func.replace(File.public_id, old_public_id_prefix, new_public_id_prefix)}, 
             synchronize_session=False
@@ -628,15 +650,19 @@ def admin_delete_folder():
     full_path = get_cloudinary_folder_path(folder_name)
     
     try:
+        # Lấy danh sách public_id của các file trong thư mục
         search_result = cloudinary.api.resources(type="upload", prefix=f"{full_path}/", max_results=500)
         public_ids_to_delete = [res['public_id'] for res in search_result.get('resources', [])]
         
         if public_ids_to_delete:
+            # Xóa trong DB
             db.session.query(File).filter(File.public_id.in_(public_ids_to_delete)).delete(synchronize_session=False)
             db.session.commit()
             
+            # Xóa trên Cloudinary
             cloudinary.api.delete_resources(public_ids_to_delete)
         
+        # Xóa chính thư mục đó
         cloudinary.api.delete_folder(full_path, force_delete=True) 
         
         create_activity_log('DELETE_FOLDER', f'Xóa thư mục: {folder_name}')
@@ -645,6 +671,8 @@ def admin_delete_folder():
         logger.error(f"Error deleting folder: {e}")
         db.session.rollback()
         return jsonify({'message': f'Lỗi khi xóa thư mục: {e}'}), 500
+# ============================================================
+
 
 @app.route('/admin/logs', methods=['GET'])
 @admin_required
