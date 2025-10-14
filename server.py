@@ -16,6 +16,7 @@ import uuid
 import logging
 import requests
 import time
+import urllib.parse # BỔ SUNG: Import cho việc xử lý URL/params
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -279,7 +280,7 @@ def get_all_users():
                     'id': u.id, 
                     'username': u.username, 
                     'avatar_url': u.avatar_url,
-                    'is_online': u.id in online_users 
+                    'is_online': u.id in online_users
                 })
         return jsonify({'users': users_info})
     except Exception as e:
@@ -307,19 +308,15 @@ def delete_history(partner_id):
 @login_required
 def get_history(partner_id):
     try:
-        # LOGIC ĐÁNH DẤU ĐÃ XEM (READ RECEIPT)
         messages_to_mark_read = db.session.query(Message).filter((Message.sender_id == partner_id) & (Message.recipient_id == current_user.id) & (Message.is_read == False))
         message_ids_to_update = [msg.id for msg in messages_to_mark_read.all()]
         
-        # Cập nhật trạng thái
         messages_to_mark_read.update({Message.is_read: True})
         db.session.commit()
         
-        # LOGIC XÁC ĐỊNH TRẠNG THÁI "ĐÃ XEM" CHO TIN ĐÃ GỬI
         last_sent_read = db.session.query(Message).filter((Message.sender_id == current_user.id) & (Message.recipient_id == partner_id) & (Message.is_read == True)).first()
         all_sent_is_read = True if last_sent_read else False
         
-        # Tải tất cả lịch sử
         all_messages = db.session.query(Message).filter(or_((Message.sender_id == current_user.id) & (Message.recipient_id == partner_id), (Message.sender_id == partner_id) & (Message.recipient_id == current_user.id))).order_by(Message.timestamp.asc()).all()
         
         history = []
@@ -332,7 +329,6 @@ def get_history(partner_id):
             
             history.append({'id': msg.id, 'sender': msg.sender.username, 'message': msg.content, 'is_read': msg_is_read})
         
-        # PHÁT SỰ KIỆN SOCKETIO ĐỂ CẬP NHẬT TRẠNG THÁI CHO NGƯỜI GỬI (Partner)
         partner_sid = online_users.get(partner_id)
         if partner_sid and message_ids_to_update:
             emit('messages_seen', {'ids': message_ids_to_update}, room=partner_sid, namespace='/')
@@ -353,7 +349,6 @@ def delete_file_post():
     if not file_record:
         return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
     
-    # Chỉ Admin mới được xóa file
     if not current_user.is_admin:
         return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
     
@@ -367,6 +362,9 @@ def delete_file_post():
         logger.error(f"Error accessing /delete-file: {e}")
         return jsonify({'message': f'Lỗi khi xóa file: {e}'}), 500
 
+# ============================================================
+# CẬP NHẬT: UPLOAD FILE (HỖ TRỢ THƯ MỤC)
+# ============================================================
 @app.route('/upload', methods=['POST'])
 @login_required
 def upload_file():
@@ -374,7 +372,7 @@ def upload_file():
         return jsonify({'message': 'Không tìm thấy file.'}), 400
     
     # BỔ SUNG: Lấy tên thư mục
-    target_folder_name = request.form.get('target_folder', 'Gốc (/)')
+    target_folder_name = request.form.get('target_folder', 'Gốc')
     
     file = request.files['file']
     if file.filename == '':
@@ -387,10 +385,10 @@ def upload_file():
         
         # Xây dựng đường dẫn Cloudinary Public ID
         folder_path = CLOUDINARY_USER_FILES_FOLDER
-        if target_folder_name != 'Gốc (/)':
+        # Nếu thư mục đích không phải 'Gốc' hoặc 'Gốc (/)', thêm nó vào đường dẫn
+        if target_folder_name and target_folder_name != 'Gốc' and target_folder_name != 'Gốc (/)':
              folder_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{target_folder_name}"
         
-        # public_id cho Cloudinary sẽ bao gồm cả đường dẫn thư mục
         public_id_base = f"{folder_path}/{safe_filename_part}_{uuid.uuid4().hex[:6]}"
         
         upload_result = cloudinary.uploader.upload(file, public_id=public_id_base, resource_type="auto")
@@ -407,11 +405,13 @@ def upload_file():
         logger.error(f"Error accessing /upload: {e}")
         return jsonify({'message': f'Lỗi khi tải file lên: {e}'}), 500
 
+# ============================================================
+# CẬP NHẬT: GET FILES (HỖ TRỢ TÌM KIẾM VÀ TRẢ VỀ THƯ MỤC)
+# ============================================================
 @app.route('/files', methods=['GET'])
 @login_required
 def get_files():
     try:
-        # BỔ SUNG: Hỗ trợ tìm kiếm theo tên file
         search_term = request.args.get('search', '').strip()
         
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
@@ -435,15 +435,12 @@ def get_files():
             
             # Trích xuất tên thư mục từ public_id
             full_folder_prefix = f"{CLOUDINARY_USER_FILES_FOLDER}/"
-            public_id_parts = f.public_id.split(full_folder_prefix)
-            
             folder_name = 'Gốc'
-            if len(public_id_parts) > 1:
-                # Tìm phần đường dẫn sau CLOUDINARY_USER_FILES_FOLDER/
-                path_after_root = public_id_parts[1]
-                if '/' in path_after_root:
-                    # Lấy tên thư mục con đầu tiên
-                    folder_name = path_after_root.split('/')[0]
+            if full_folder_prefix in f.public_id:
+                folder_path_raw = f.public_id.split(full_folder_prefix, 1)[-1]
+                if '/' in folder_path_raw:
+                    # Lấy phần tên thư mục (trước dấu / cuối cùng)
+                    folder_name = folder_path_raw.rsplit('/', 1)[0]
                 
             file_list.append({
                 'filename': f.filename,
@@ -523,88 +520,6 @@ def update_file_content():
         return jsonify({'message': f'Lỗi khi cập nhật file: {str(e)}'}), 500
 
 # ============================================================
-# BỔ SUNG: ADMIN - QUẢN LÝ THƯ MỤC CLOUDINARY
-# ============================================================
-@app.route('/admin/folders', methods=['GET'])
-@admin_required
-def admin_get_folders():
-    """Lấy danh sách thư mục con trong CLOUDINARY_USER_FILES_FOLDER."""
-    try:
-        folders_response = cloudinary.api.sub_folders(CLOUDINARY_USER_FILES_FOLDER)
-        
-        folders = [f['name'] for f in folders_response.get('folders', [])]
-        
-        # Thêm thư mục gốc mặc định (Root)
-        folders.insert(0, 'Gốc (/)') 
-        
-        return jsonify({'folders': folders})
-    except Exception as e:
-        logger.error(f"Error accessing /admin/folders GET: {e}")
-        # Trả về Gốc nếu Cloudinary gặp lỗi hoặc chưa có folder nào
-        return jsonify({'folders': ['Gốc (/)']})
-
-@app.route('/admin/folders', methods=['POST'])
-@admin_required
-def admin_create_folder():
-    data = request.get_json()
-    folder_name = data.get('folder_name')
-    if not folder_name:
-        return jsonify({'message': 'Thiếu tên thư mục.'}), 400
-    
-    full_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{folder_name}"
-    
-    try:
-        cloudinary.api.create_folder(full_path)
-        create_activity_log('CREATE_FOLDER', f'Tạo thư mục: {folder_name}')
-        return jsonify({'message': f"Đã tạo thư mục '{folder_name}' thành công!"}), 201
-    except Exception as e:
-        logger.error(f"Error creating folder: {e}")
-        return jsonify({'message': f'Lỗi khi tạo thư mục: {e}'}), 500
-
-@app.route('/admin/folders', methods=['PUT'])
-@admin_required
-def admin_rename_folder():
-    data = request.get_json()
-    old_name = data.get('old_name')
-    new_name = data.get('new_name')
-    if not old_name or not new_name:
-        return jsonify({'message': 'Thiếu tên thư mục cũ hoặc mới.'}), 400
-        
-    old_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{old_name}"
-    new_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{new_name}"
-    
-    try:
-        cloudinary.api.rename_folder(old_path, new_path)
-        create_activity_log('RENAME_FOLDER', f'Đổi tên thư mục: {old_name} -> {new_name}')
-        return jsonify({'message': f"Đã đổi tên thư mục từ '{old_name}' thành '{new_name}' thành công!"}), 200
-    except Exception as e:
-        logger.error(f"Error renaming folder: {e}")
-        return jsonify({'message': f'Lỗi khi đổi tên thư mục: {e}'}), 500
-        
-@app.route('/admin/folders', methods=['DELETE'])
-@admin_required
-def admin_delete_folder():
-    data = request.get_json()
-    folder_name = data.get('folder_name')
-    if not folder_name:
-        return jsonify({'message': 'Thiếu tên thư mục.'}), 400
-    
-    if folder_name == 'Gốc (/)':
-        return jsonify({'message': 'Không thể xóa thư mục gốc.'}), 400
-
-    full_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{folder_name}"
-    
-    try:
-        # Xóa thư mục và toàn bộ nội dung bên trong
-        cloudinary.api.delete_folder(full_path, force_delete=True) 
-        create_activity_log('DELETE_FOLDER', f'Xóa thư mục: {folder_name}')
-        return jsonify({'message': f"Đã xóa thư mục '{folder_name}' và toàn bộ nội dung thành công!"}), 200
-    except Exception as e:
-        logger.error(f"Error deleting folder: {e}")
-        return jsonify({'message': f'Lỗi khi xóa thư mục: {e}'}), 500
-# ============================================================
-
-# ============================================================
 # LOGIC XÓA LOG CHO ADMIN
 # ============================================================
 @app.route('/admin/logs/delete-all', methods=['DELETE'])
@@ -638,6 +553,125 @@ def admin_delete_log(log_id):
         db.session.rollback()
         return jsonify({'message': 'Lỗi server khi xóa log đơn lẻ.'}), 500
 # ============================================================
+
+# ============================================================
+# BỔ SUNG: ADMIN - QUẢN LÝ THƯ MỤC CLOUDINARY
+# ============================================================
+def get_cloudinary_folder_path(folder_name):
+    """Trả về đường dẫn Cloudinary đầy đủ hoặc thư mục gốc."""
+    if folder_name == 'Gốc' or folder_name == 'Gốc (/)':
+        return CLOUDINARY_USER_FILES_FOLDER
+    # Đảm bảo tên thư mục không bắt đầu bằng dấu / (nếu có)
+    clean_folder_name = folder_name.strip('/') 
+    return f"{CLOUDINARY_USER_FILES_FOLDER}/{clean_folder_name}"
+
+@app.route('/admin/folders', methods=['GET'])
+@admin_required
+def admin_get_folders():
+    """Lấy danh sách thư mục con trong CLOUDINARY_USER_FILES_FOLDER."""
+    try:
+        # Lấy danh sách các thư mục con ngay dưới CLOUDINARY_USER_FILES_FOLDER
+        folders_response = cloudinary.api.sub_folders(CLOUDINARY_USER_FILES_FOLDER)
+        
+        folders = [f['name'] for f in folders_response.get('folders', [])]
+        
+        # Thêm thư mục gốc mặc định (Root)
+        folders.insert(0, 'Gốc (/)') 
+        
+        return jsonify({'folders': folders})
+    except Exception as e:
+        logger.error(f"Error accessing /admin/folders GET: {e}")
+        # Trả về Gốc nếu lỗi
+        return jsonify({'folders': ['Gốc (/)']}), 200
+
+@app.route('/admin/folders', methods=['POST'])
+@admin_required
+def admin_create_folder():
+    data = request.get_json()
+    folder_name = data.get('folder_name')
+    if not folder_name or folder_name == 'Gốc (/)':
+        return jsonify({'message': 'Thiếu tên thư mục hoặc tên không hợp lệ.'}), 400
+    
+    full_path = get_cloudinary_folder_path(folder_name)
+    
+    try:
+        # Sử dụng API để tạo thư mục
+        cloudinary.api.create_folder(full_path)
+        create_activity_log('CREATE_FOLDER', f'Tạo thư mục: {folder_name}')
+        return jsonify({'message': f"Đã tạo thư mục '{folder_name}' thành công!"}), 201
+    except Exception as e:
+        logger.error(f"Error creating folder: {e}")
+        return jsonify({'message': f'Lỗi khi tạo thư mục: {e}'}), 500
+
+@app.route('/admin/folders', methods=['PUT'])
+@admin_required
+def admin_rename_folder():
+    data = request.get_json()
+    old_name = data.get('old_name')
+    new_name = data.get('new_name')
+    if not old_name or not new_name or old_name == 'Gốc (/)':
+        return jsonify({'message': 'Thiếu tên thư mục cũ/mới hoặc không thể đổi tên Gốc.'}), 400
+        
+    old_path = get_cloudinary_folder_path(old_name)
+    new_path = get_cloudinary_folder_path(new_name)
+    
+    try:
+        # Sử dụng API để đổi tên thư mục
+        cloudinary.api.rename_folder(old_path, new_path)
+        create_activity_log('RENAME_FOLDER', f'Đổi tên thư mục: {old_name} -> {new_name}')
+        
+        # Cập nhật public_id trong DB
+        old_public_id_prefix = f"{old_path}/"
+        new_public_id_prefix = f"{new_path}/"
+        
+        db.session.query(File).filter(File.public_id.like(f'{old_public_id_prefix}%')).update(
+            {File.public_id: db.sql.func.replace(File.public_id, old_public_id_prefix, new_public_id_prefix)}, 
+            synchronize_session=False
+        )
+        db.session.commit()
+        
+        return jsonify({'message': f"Đã đổi tên thư mục từ '{old_name}' thành '{new_name}' thành công!"}), 200
+    except Exception as e:
+        logger.error(f"Error renaming folder: {e}")
+        return jsonify({'message': f'Lỗi khi đổi tên thư mục: {e}'}), 500
+        
+@app.route('/admin/folders', methods=['DELETE'])
+@admin_required
+def admin_delete_folder():
+    data = request.get_json()
+    folder_name = data.get('folder_name')
+    if not folder_name or folder_name == 'Gốc (/)':
+        return jsonify({'message': 'Tên thư mục không hợp lệ hoặc không thể xóa thư mục gốc.'}), 400
+
+    full_path = get_cloudinary_folder_path(folder_name)
+    
+    try:
+        # Xóa các file liên quan trong DB trước (do folder=None trong upload sẽ không tạo folder rõ ràng)
+        # Sử dụng Cloudinary Search API để tìm và xóa file liên quan nếu cần thiết
+        
+        # Lấy danh sách public_id của các file trong thư mục
+        search_result = cloudinary.api.resources(type="upload", prefix=f"{full_path}/", max_results=500)
+        public_ids_to_delete = [res['public_id'] for res in search_result.get('resources', [])]
+        
+        if public_ids_to_delete:
+            # Xóa trong DB
+            db.session.query(File).filter(File.public_id.in_(public_ids_to_delete)).delete(synchronize_session=False)
+            db.session.commit()
+            
+            # Xóa trên Cloudinary
+            cloudinary.api.delete_resources(public_ids_to_delete)
+        
+        # Xóa chính thư mục đó
+        cloudinary.api.delete_folder(full_path, force_delete=True) 
+        
+        create_activity_log('DELETE_FOLDER', f'Xóa thư mục: {folder_name}')
+        return jsonify({'message': f"Đã xóa thư mục '{folder_name}' và toàn bộ nội dung thành công!"}), 200
+    except Exception as e:
+        logger.error(f"Error deleting folder: {e}")
+        db.session.rollback()
+        return jsonify({'message': f'Lỗi khi xóa thư mục: {e}'}), 500
+# ============================================================
+
 
 @app.route('/admin/logs', methods=['GET'])
 @admin_required
@@ -786,7 +820,6 @@ def admin_delete_user(user_id):
             return jsonify({'message': 'Không thể tự xóa tài khoản của mình.'}), 400
         username = user.username
         
-        # Xóa tất cả các file liên quan trên Cloudinary (Avatars và User Files)
         cloudinary.api.delete_resources_by_prefix(f"{CLOUDINARY_AVATAR_FOLDER}/user_{user.id}_")
         
         db.session.delete(user)
