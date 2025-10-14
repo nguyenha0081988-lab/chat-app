@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from flask import Flask, request, jsonify, send_from_directory
 from flask.cli import with_appcontext
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import inspect, or_, not_, func
+from sqlalchemy import inspect, or_, not_
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
@@ -84,7 +84,6 @@ class User(UserMixin, db.Model):
     received_messages = db.relationship('Message', foreign_keys='Message.recipient_id', backref='recipient_user', lazy=True, cascade="all, delete-orphan")
     activity_logs = db.relationship('ActivityLog', foreign_keys='ActivityLog.user_id', backref='user', lazy=True, cascade="all, delete-orphan")
     file_accesses = db.relationship('FileAccessLog', backref='user', lazy=True, cascade="all, delete-orphan")
-    folders = db.relationship('Folder', backref='creator', lazy=True)
     
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -92,23 +91,12 @@ class User(UserMixin, db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
-class Folder(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
-    parent_id = db.Column(db.Integer, db.ForeignKey('folder.id'), nullable=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    created_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-
-    parent = db.relationship('Folder', remote_side=[id], backref='subfolders')
-    files = db.relationship('File', backref='folder', lazy=True, cascade="all, delete-orphan")
-
 class File(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(255), nullable=False)
     public_id = db.Column(db.String(255), nullable=False, unique=True)
     resource_type = db.Column(db.String(50), nullable=False, default='raw')
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    folder_id = db.Column(db.Integer, db.ForeignKey('folder.id', ondelete='SET NULL'), nullable=True)
     upload_date = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     last_opened_by = db.Column(db.String(80), nullable=True)
     last_opened_at = db.Column(db.DateTime, nullable=True)
@@ -181,15 +169,12 @@ SELF_PING_URL = os.environ.get('SELF_PING_URL')
 
 def ping_self():
     """Thực hiện ping server định kỳ để ngăn Render ngủ đông."""
-    # Thời gian chờ (840 giây = 14 phút) là tối ưu nhất cho Render miễn phí
     PING_INTERVAL_SECONDS = 840 
     
     while True:
-        # Sử dụng eventlet.sleep thay vì time.sleep
         eventlet.sleep(PING_INTERVAL_SECONDS)
         
         try:
-            # Gửi GET request đến URL công khai của chính Server
             requests.get(SELF_PING_URL, timeout=10)
             logger.info(f"[KEEP-ALIVE] Ping thành công lúc: {datetime.now(timezone.utc)}")
         except Exception as e:
@@ -199,11 +184,8 @@ def start_keep_alive_thread():
     """Khởi tạo luồng ping nếu biến môi trường được đặt."""
     if SELF_PING_URL:
         logger.info(f"Bắt đầu luồng Keep-Alive cho URL: {SELF_PING_URL}")
-        # Chạy hàm ping_self trong một luồng eventlet riêng
         eventlet.spawn(ping_self) 
 
-# Chạy luồng Keep-Alive ngay sau khi ứng dụng được setup
-# Đây là cách bạn đảm bảo nó chạy 24/24 (trong giới hạn gói miễn phí)
 start_keep_alive_thread()
 # ============================================================
 
@@ -297,7 +279,7 @@ def get_all_users():
                     'id': u.id, 
                     'username': u.username, 
                     'avatar_url': u.avatar_url,
-                    'is_online': u.id in online_users # Client có thể sử dụng trường này nếu cần
+                    'is_online': u.id in online_users 
                 })
         return jsonify({'users': users_info})
     except Exception as e:
@@ -333,8 +315,7 @@ def get_history(partner_id):
         messages_to_mark_read.update({Message.is_read: True})
         db.session.commit()
         
-        # LOGIC XÁC ĐỊNH TRẠNG THÁNG "ĐÃ XEM" CHO TIN ĐÃ GỬI
-        # Lấy một tin nhắn đã gửi đi mà đã được đọc (chỉ cần 1 tin để suy ra trạng thái)
+        # LOGIC XÁC ĐỊNH TRẠNG THÁI "ĐÃ XEM" CHO TIN ĐÃ GỬI
         last_sent_read = db.session.query(Message).filter((Message.sender_id == current_user.id) & (Message.recipient_id == partner_id) & (Message.is_read == True)).first()
         all_sent_is_read = True if last_sent_read else False
         
@@ -347,10 +328,6 @@ def get_history(partner_id):
             msg_is_read = msg.is_read
             
             if is_mine:
-                # Nếu là tin nhắn của mình, trạng thái "Đã xem" phụ thuộc vào việc
-                # người nhận đã đọc bất kỳ tin nhắn nào mình gửi hay chưa.
-                # Đây là một logic đơn giản hóa cho Read Receipt: chỉ cần một tin được đọc, 
-                # tất cả tin nhắn gửi đi trong luồng đó được hiển thị là "Đã xem".
                 msg_is_read = all_sent_is_read
             
             history.append({'id': msg.id, 'sender': msg.sender.username, 'message': msg.content, 'is_read': msg_is_read})
@@ -358,7 +335,6 @@ def get_history(partner_id):
         # PHÁT SỰ KIỆN SOCKETIO ĐỂ CẬP NHẬT TRẠNG THÁI CHO NGƯỜI GỬI (Partner)
         partner_sid = online_users.get(partner_id)
         if partner_sid and message_ids_to_update:
-            # Chỉ gửi sự kiện nếu có tin nhắn mới được đánh dấu là đã đọc
             emit('messages_seen', {'ids': message_ids_to_update}, room=partner_sid, namespace='/')
             
         return jsonify(history)
@@ -377,7 +353,7 @@ def delete_file_post():
     if not file_record:
         return jsonify({'message': 'File không tồn tại trong CSDL.'}), 404
     
-    # KHÔI PHỤC KIỂM TRA QUYỀN: Chỉ Admin mới được xóa file
+    # Chỉ Admin mới được xóa file
     if not current_user.is_admin:
         return jsonify({'message': 'Bạn không có quyền xóa file này.'}), 403
     
@@ -396,93 +372,90 @@ def delete_file_post():
 def upload_file():
     if 'file' not in request.files:
         return jsonify({'message': 'Không tìm thấy file.'}), 400
+    
+    # BỔ SUNG: Lấy tên thư mục
+    target_folder_name = request.form.get('target_folder', 'Gốc (/)')
+    
     file = request.files['file']
     if file.filename == '':
         return jsonify({'message': 'Tên file không hợp lệ.'}), 400
+        
     original_filename = file.filename
-    folder_id = request.form.get('folder_id')  # Bổ sung: folder_id từ client
-    folder_path = ""
-    if folder_id:
-        folder = Folder.query.get(folder_id)
-        if not folder:
-            return jsonify({'message': 'Thư mục không tồn tại.'}), 404
-        folder_path = get_folder_path(folder)  # Lấy đường dẫn full path của folder
     try:
         file_base_name, file_extension = os.path.splitext(original_filename)
         safe_filename_part = secure_filename(file_base_name)
-        public_id_part = f"{safe_filename_part}_{uuid.uuid4().hex[:6]}{file_extension}"
-        public_id_base = f"{CLOUDINARY_USER_FILES_FOLDER}/{folder_path}{public_id_part}".strip('/')
+        
+        # Xây dựng đường dẫn Cloudinary Public ID
+        folder_path = CLOUDINARY_USER_FILES_FOLDER
+        if target_folder_name != 'Gốc (/)':
+             folder_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{target_folder_name}"
+        
+        # public_id cho Cloudinary sẽ bao gồm cả đường dẫn thư mục
+        public_id_base = f"{folder_path}/{safe_filename_part}_{uuid.uuid4().hex[:6]}"
+        
         upload_result = cloudinary.uploader.upload(file, public_id=public_id_base, resource_type="auto")
         resource_type_from_cloudinary = upload_result.get('resource_type', 'raw')
-        # File vẫn được gán cho người tải lên ban đầu
-        new_file = File(filename=original_filename, public_id=upload_result['public_id'], resource_type=resource_type_from_cloudinary, user_id=current_user.id, folder_id=folder_id)
+        
+        new_file = File(filename=original_filename, public_id=upload_result['public_id'], resource_type=resource_type_from_cloudinary, user_id=current_user.id)
         db.session.add(new_file)
         db.session.commit()
-        create_activity_log('UPLOAD_FILE', f'File: {original_filename} vào thư mục {folder_path}')
-        return jsonify({'message': f'File {new_file.filename} đã được tải lên thành công!'})
+        
+        create_activity_log('UPLOAD_FILE', f'File: {original_filename} vào thư mục {target_folder_name}')
+        
+        return jsonify({'message': f'File {new_file.filename} đã được tải lên thành công vào thư mục {target_folder_name}!'})
     except Exception as e:
         logger.error(f"Error accessing /upload: {e}")
         return jsonify({'message': f'Lỗi khi tải file lên: {e}'}), 500
-
-def get_folder_path(folder):
-    """Lấy đường dẫn full path của folder (recursive)."""
-    path = folder.name + '/'
-    if folder.parent:
-        path = get_folder_path(folder.parent) + path
-    return path
 
 @app.route('/files', methods=['GET'])
 @login_required
 def get_files():
     try:
+        # BỔ SUNG: Hỗ trợ tìm kiếm theo tên file
+        search_term = request.args.get('search', '').strip()
+        
         files_to_exclude = AppVersion.query.with_entities(AppVersion.public_id).all()
         files_to_exclude_list = [f[0] for f in files_to_exclude]
-        files = File.query.filter(
+        
+        files_query = File.query.filter(
             File.public_id.like(f'{CLOUDINARY_USER_FILES_FOLDER}/%'),
             not_(File.public_id.like(f'{CLOUDINARY_AVATAR_FOLDER}/%')),
             not_(File.public_id.in_(files_to_exclude_list))
-        ).all()
+        )
+        
+        # Áp dụng tìm kiếm
+        if search_term:
+            files_query = files_query.filter(File.filename.ilike(f'%{search_term}%'))
+
+        files = files_query.all()
         
         file_list = []
         for f in files:
-            # Đảm bảo f.owner không phải là None trước khi truy cập .username
             uploaded_by_username = f.owner.username if f.owner else "Người dùng đã bị xóa"
-            folder_name = f.folder.name if f.folder else "Root"
-
-            file_list.append({
-                'filename': f.filename,
-                'public_id': f.public_id,
-                'uploaded_by': uploaded_by_username, 
-                'folder_name': folder_name,
-                'last_opened_by': f.last_opened_by,
-                'last_opened_at': f.last_opened_at.isoformat() if f.last_opened_at else None
-            })
-        return jsonify({'files': file_list})
-    except Exception as e:
-        logger.error(f"Error accessing /files: {e}")
-        return jsonify({'message': 'Internal Server Error'}), 500
-
-@app.route('/files/search', methods=['GET'])
-@login_required
-def search_files():
-    query = request.args.get('q', '')
-    try:
-        files = File.query.filter(File.filename.ilike(f'%{query}%')).all()
-        file_list = []
-        for f in files:
-            uploaded_by_username = f.owner.username if f.owner else "Người dùng đã bị xóa"
-            folder_name = f.folder.name if f.folder else "Root"
+            
+            # Trích xuất tên thư mục từ public_id
+            full_folder_prefix = f"{CLOUDINARY_USER_FILES_FOLDER}/"
+            public_id_parts = f.public_id.split(full_folder_prefix)
+            
+            folder_name = 'Gốc'
+            if len(public_id_parts) > 1:
+                # Tìm phần đường dẫn sau CLOUDINARY_USER_FILES_FOLDER/
+                path_after_root = public_id_parts[1]
+                if '/' in path_after_root:
+                    # Lấy tên thư mục con đầu tiên
+                    folder_name = path_after_root.split('/')[0]
+                
             file_list.append({
                 'filename': f.filename,
                 'public_id': f.public_id,
                 'uploaded_by': uploaded_by_username,
-                'folder_name': folder_name,
                 'last_opened_by': f.last_opened_by,
-                'last_opened_at': f.last_opened_at.isoformat() if f.last_opened_at else None
+                'last_opened_at': f.last_opened_at.isoformat() if f.last_opened_at else None,
+                'folder': folder_name 
             })
         return jsonify({'files': file_list})
     except Exception as e:
-        logger.error(f"Error in /files/search: {e}")
+        logger.error(f"Error accessing /files: {e}")
         return jsonify({'message': 'Internal Server Error'}), 500
 
 @app.route('/download', methods=['POST'])
@@ -499,7 +472,6 @@ def download_file():
             logger.warning(f"[DOWNLOAD] File không tồn tại trong DB: {public_id}")
             return jsonify({'message': 'File không tồn tại.'}), 404
         logger.info(f"[DOWNLOAD] Tìm thấy file: {file_record.filename}, resource_type: {file_record.resource_type}")
-        # Mọi người đều có thể tải xuống.
         download_url, _ = cloudinary.utils.cloudinary_url(file_record.public_id, resource_type=file_record.resource_type, type="upload", attachment=True, flags="attachment", secure=True)
         logger.info(f"[DOWNLOAD] URL tạo thành công")
         create_activity_log('DOWNLOAD_FILE', f'File: {file_record.filename}')
@@ -515,7 +487,6 @@ def file_opened(public_id):
         file_record = File.query.filter_by(public_id=public_id).first()
         if not file_record:
             return jsonify({'message': 'File không tồn tại.'}), 404
-        # Cho phép mọi user ghi log mở file (không cần kiểm tra quyền)
         new_access_log = FileAccessLog(file_id=file_record.id, user_id=current_user.id)
         db.session.add(new_access_log)
         file_record.last_opened_by = current_user.username
@@ -541,7 +512,6 @@ def update_file_content():
         if not file_record:
             return jsonify({'message': 'File không tồn tại trong hệ thống.'}), 404
         
-        # Cho phép tất cả user có quyền cập nhật đồng bộ file
         uploaded_file = request.files['file']
         logger.info(f"[AUTO-SYNC] User {current_user.username} đang cập nhật file: {file_record.filename}")
         upload_result = cloudinary.uploader.upload(uploaded_file, public_id=public_id, overwrite=True, resource_type=file_record.resource_type, invalidate=True)
@@ -553,68 +523,85 @@ def update_file_content():
         return jsonify({'message': f'Lỗi khi cập nhật file: {str(e)}'}), 500
 
 # ============================================================
-# BỔ SUNG: QUẢN LÝ THƯ MỤC CHO ADMIN
+# BỔ SUNG: ADMIN - QUẢN LÝ THƯ MỤC CLOUDINARY
 # ============================================================
-@app.route('/folders', methods=['GET'])
-@login_required
-def get_folders():
+@app.route('/admin/folders', methods=['GET'])
+@admin_required
+def admin_get_folders():
+    """Lấy danh sách thư mục con trong CLOUDINARY_USER_FILES_FOLDER."""
     try:
-        folders = Folder.query.all()
-        folder_list = []
-        for f in folders:
-            folder_list.append({
-                'id': f.id,
-                'name': f.name,
-                'parent_id': f.parent_id,
-                'full_path': get_folder_path(f).rstrip('/')
-            })
-        return jsonify({'folders': folder_list})
+        folders_response = cloudinary.api.sub_folders(CLOUDINARY_USER_FILES_FOLDER)
+        
+        folders = [f['name'] for f in folders_response.get('folders', [])]
+        
+        # Thêm thư mục gốc mặc định (Root)
+        folders.insert(0, 'Gốc (/)') 
+        
+        return jsonify({'folders': folders})
     except Exception as e:
-        logger.error(f"Error in /folders: {e}")
-        return jsonify({'message': 'Internal Server Error'}), 500
+        logger.error(f"Error accessing /admin/folders GET: {e}")
+        # Trả về Gốc nếu Cloudinary gặp lỗi hoặc chưa có folder nào
+        return jsonify({'folders': ['Gốc (/)']})
 
 @app.route('/admin/folders', methods=['POST'])
 @admin_required
-def create_folder():
+def admin_create_folder():
     data = request.get_json()
-    name = data.get('name')
-    parent_id = data.get('parent_id')
-    if not name:
+    folder_name = data.get('folder_name')
+    if not folder_name:
         return jsonify({'message': 'Thiếu tên thư mục.'}), 400
-    if Folder.query.filter_by(name=name, parent_id=parent_id).first():
-        return jsonify({'message': 'Thư mục đã tồn tại trong cấp này.'}), 400
-    new_folder = Folder(name=name, parent_id=parent_id, created_by_id=current_user.id)
-    db.session.add(new_folder)
-    db.session.commit()
-    create_activity_log('CREATE_FOLDER', f'Thư mục: {name}')
-    return jsonify({'message': f'Thư mục "{name}" đã được tạo.'}), 201
+    
+    full_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{folder_name}"
+    
+    try:
+        cloudinary.api.create_folder(full_path)
+        create_activity_log('CREATE_FOLDER', f'Tạo thư mục: {folder_name}')
+        return jsonify({'message': f"Đã tạo thư mục '{folder_name}' thành công!"}), 201
+    except Exception as e:
+        logger.error(f"Error creating folder: {e}")
+        return jsonify({'message': f'Lỗi khi tạo thư mục: {e}'}), 500
 
-@app.route('/admin/folders/<int:folder_id>', methods=['PUT'])
+@app.route('/admin/folders', methods=['PUT'])
 @admin_required
-def rename_folder(folder_id):
-    folder = Folder.query.get_or_404(folder_id)
+def admin_rename_folder():
     data = request.get_json()
+    old_name = data.get('old_name')
     new_name = data.get('new_name')
-    if not new_name:
-        return jsonify({'message': 'Thiếu tên mới.'}), 400
-    if Folder.query.filter_by(name=new_name, parent_id=folder.parent_id).filter(Folder.id != folder_id).first():
-        return jsonify({'message': 'Tên thư mục mới đã tồn tại trong cấp này.'}), 400
-    old_name = folder.name
-    folder.name = new_name
-    db.session.commit()
-    create_activity_log('RENAME_FOLDER', f'{old_name} -> {new_name}')
-    return jsonify({'message': f'Thư mục đã được đổi tên thành "{new_name}".'})
-
-@app.route('/admin/folders/<int:folder_id>', methods=['DELETE'])
+    if not old_name or not new_name:
+        return jsonify({'message': 'Thiếu tên thư mục cũ hoặc mới.'}), 400
+        
+    old_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{old_name}"
+    new_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{new_name}"
+    
+    try:
+        cloudinary.api.rename_folder(old_path, new_path)
+        create_activity_log('RENAME_FOLDER', f'Đổi tên thư mục: {old_name} -> {new_name}')
+        return jsonify({'message': f"Đã đổi tên thư mục từ '{old_name}' thành '{new_name}' thành công!"}), 200
+    except Exception as e:
+        logger.error(f"Error renaming folder: {e}")
+        return jsonify({'message': f'Lỗi khi đổi tên thư mục: {e}'}), 500
+        
+@app.route('/admin/folders', methods=['DELETE'])
 @admin_required
-def delete_folder(folder_id):
-    folder = Folder.query.get_or_404(folder_id)
-    if folder.subfolders.count() > 0 or folder.files.count() > 0:
-        return jsonify({'message': 'Thư mục không rỗng. Vui lòng xóa file/thư mục con trước.'}), 400
-    db.session.delete(folder)
-    db.session.commit()
-    create_activity_log('DELETE_FOLDER', f'Thư mục: {folder.name}')
-    return jsonify({'message': f'Thư mục "{folder.name}" đã được xóa.'})
+def admin_delete_folder():
+    data = request.get_json()
+    folder_name = data.get('folder_name')
+    if not folder_name:
+        return jsonify({'message': 'Thiếu tên thư mục.'}), 400
+    
+    if folder_name == 'Gốc (/)':
+        return jsonify({'message': 'Không thể xóa thư mục gốc.'}), 400
+
+    full_path = f"{CLOUDINARY_USER_FILES_FOLDER}/{folder_name}"
+    
+    try:
+        # Xóa thư mục và toàn bộ nội dung bên trong
+        cloudinary.api.delete_folder(full_path, force_delete=True) 
+        create_activity_log('DELETE_FOLDER', f'Xóa thư mục: {folder_name}')
+        return jsonify({'message': f"Đã xóa thư mục '{folder_name}' và toàn bộ nội dung thành công!"}), 200
+    except Exception as e:
+        logger.error(f"Error deleting folder: {e}")
+        return jsonify({'message': f'Lỗi khi xóa thư mục: {e}'}), 500
 # ============================================================
 
 # ============================================================
@@ -850,6 +837,9 @@ def handle_private_message(data):
     content = data.get('message')
     if not recipient_id or not content:
         return
+    new_msg = Message(sender_id=current_user.id, recipient_id=recipient_id, content=content)
+    db.session.add(new_msg)
+    db.session.commit()
     recipient = User.query.get(recipient_id)
     if recipient:
         create_activity_log('SEND_MESSAGE', f'Gửi tin nhắn đến: {recipient.username}', target_user_id=recipient_id)
